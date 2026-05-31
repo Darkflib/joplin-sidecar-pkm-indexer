@@ -117,6 +117,10 @@ class IndexingConfig(BaseModel):
 
     stale_days: int = 90
     inbox_folder_names: list[str] = ["Inbox", "00 Inbox", "_Inbox"]
+    # On `serve` startup, if the index has never been fully built and a Joplin
+    # token is configured, kick off a one-time full rebuild so the launcher-managed
+    # (serve-only) path backfills existing notes instead of staying empty.
+    rebuild_on_empty_start: bool = True
 
 
 class AppConfig(BaseModel):

@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-05-31
+
+### Added
+- **First-run backfill** — on `serve` startup, if the index has never been fully
+  built and a Joplin token is configured, a one-time full rebuild is kicked off
+  automatically. This fixes the launcher (serve-only) path, where the background
+  loop runs only incremental sync and the index would otherwise stay empty.
+  Controlled by `[indexing].rebuild_on_empty_start` (default `true`).
+
+### Fixed
+- `__version__` (and `/health`/`/api/status` `version`) was still reporting
+  `0.1.0`; it now tracks the package version.
+
 ## [0.2.0] — 2026-05-31
 
 Builds on v0.1 (still read-only; every new Joplin call is a GET). **Schema v2 —
@@ -65,5 +78,6 @@ verified end-to-end against a live Joplin (~2200 notes indexed); see
 - Windows under the launcher is experimental (the `0600` token-file permission is
   a no-op there).
 
+[0.2.1]: https://github.com/darkflib/joplin-sidecar-pkm-indexer/releases/tag/v0.2.1
 [0.2.0]: https://github.com/darkflib/joplin-sidecar-pkm-indexer/releases/tag/v0.2.0
 [0.1.0]: https://github.com/darkflib/joplin-sidecar-pkm-indexer/releases/tag/v0.1.0

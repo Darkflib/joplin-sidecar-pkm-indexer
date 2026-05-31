@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 
-from pkm_sidecar import __version__, dashboard, db, security
+from pkm_sidecar import __version__, dashboard, db, security, services
 from pkm_sidecar.api_errors import register_exception_handlers
 from pkm_sidecar.api_models import HealthResponse
 from pkm_sidecar.config import AppConfig
@@ -57,6 +57,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Only run the background loop when we can actually reach Joplin (token set)
     # and the caller asked for it (tests disable it).
     enable = app.state.start_indexer_loop and bool(cfg.joplin.token)
+    # First-run backfill: serve-only (launcher) startups otherwise stay empty
+    # because the loop only does incremental sync.
+    if enable and services.needs_initial_rebuild(cfg, writer):
+        log_event(logger, "index.full.started", reason="empty_index_backfill")
+        indexer.dispatch_rebuild()
     await indexer.start(enable_background=enable)
 
     log_event(logger, "service.start", host=cfg.server.host, port=cfg.server.port)

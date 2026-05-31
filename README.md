@@ -72,7 +72,13 @@ level = "INFO"
 [indexing]
 stale_days = 90
 inbox_folder_names = ["Inbox", "00 Inbox", "_Inbox"]
+rebuild_on_empty_start = true   # auto full-rebuild on first serve if the index is empty
 ```
+
+> When started by the launcher (which runs `serve`), the first launch with an
+> empty index and a configured Joplin token triggers a one-time full rebuild so
+> your notes are backfilled — incremental sync alone only captures changes going
+> forward. Set `rebuild_on_empty_start = false` to opt out.
 
 ### Where the API token comes from
 

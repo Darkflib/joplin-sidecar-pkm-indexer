@@ -89,6 +89,19 @@ def compute_body_hash(body: str) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+def needs_initial_rebuild(cfg: AppConfig, conn: sqlite3.Connection) -> bool:
+    """True if the index has never been fully built and a backfill should run.
+
+    The serve-only (launcher) path otherwise only runs incremental sync, which
+    captures changes from the cursor forward and never backfills existing notes.
+    """
+    return (
+        cfg.indexing.rebuild_on_empty_start
+        and cfg.joplin.token is not None
+        and db.get_meta(conn, db.META_LAST_FULL_INDEX_AT) is None
+    )
+
+
 def _now() -> int:
     """Epoch seconds — for human-facing meta timestamps and index_runs."""
     return int(time.time())

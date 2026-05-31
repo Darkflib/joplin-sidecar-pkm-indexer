@@ -4,6 +4,6 @@
 by ``GET /health`` and ``GET /api/status`` (PRD §13.1, §13.2).
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 
 __all__ = ["__version__"]
