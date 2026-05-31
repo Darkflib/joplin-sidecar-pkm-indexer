@@ -19,8 +19,15 @@ line that also contains a link yields both a task row and a link row.
 from __future__ import annotations
 
 import re
+from typing import TypedDict
 
 from pkm_sidecar.models import ExtractedLink, ExtractedTask, LinkType
+
+
+class ExtractResult(TypedDict):
+    tasks: list[ExtractedTask]
+    links: list[ExtractedLink]
+
 
 # Bullet task: optional indent, -/*/+ bullet, [ ]/[x]/[X], then text.
 _TASK_RE = re.compile(r"^\s*[-*+]\s+\[([ xX])\]\s?(.*)$")
@@ -48,7 +55,7 @@ def classify_link(target: str) -> LinkType:
     return "relative"
 
 
-def extract(note_id: str, body: str) -> dict[str, list]:
+def extract(note_id: str, body: str) -> ExtractResult:
     """Extract tasks and links from *body*; returns ``{"tasks": [...], "links": [...]}``."""
     tasks: list[ExtractedTask] = []
     links: list[ExtractedLink] = []
