@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<section id="paste-banner" hidden>
+  <p>Enter the sidecar API token to load data:</p>
+  <input id="token-input" type="password" autocomplete="off" />
+  <button id="token-save" type="button">Save</button>
+</section>
+
+<section id="search-section">
+  <form id="search-form">
+    <input id="search-input" type="search" placeholder="Search notes…" />
+    <button type="submit">Search</button>
+  </form>
+  <ul id="search-results"></ul>
+</section>
+
+<section><h2>Status</h2><pre id="status">…</pre></section>
+<section><h2>Recent</h2><ul id="recent"></ul></section>
+<section><h2>Inbox</h2><ul id="inbox"></ul></section>
+<section><h2>Untagged</h2><ul id="untagged"></ul></section>
+<section><h2>TODOs</h2><ul id="todos"></ul></section>
+<section><h2>Stale</h2><ul id="stale"></ul></section>
+{% endblock %}

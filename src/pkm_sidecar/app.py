@@ -12,8 +12,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 
-from pkm_sidecar import __version__, db, security
+from pkm_sidecar import __version__, dashboard, db, security
 from pkm_sidecar.api_errors import register_exception_handlers
 from pkm_sidecar.api_models import HealthResponse
 from pkm_sidecar.config import AppConfig
@@ -103,4 +104,6 @@ def create_app(settings: AppConfig, *, start_indexer_loop: bool = True) -> FastA
         return HealthResponse(ok=True, service=SERVICE_NAME, version=__version__)
 
     app.include_router(router)
+    app.include_router(dashboard.router)  # public GET /
+    app.mount("/static", StaticFiles(directory=str(dashboard.STATIC_DIR)), name="static")
     return app
