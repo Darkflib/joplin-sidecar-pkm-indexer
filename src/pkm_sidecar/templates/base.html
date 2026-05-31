@@ -3,13 +3,30 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>{% block title %}{{ service_name }}{% endblock %}</title>
     <link rel="stylesheet" href="/static/dashboard.css?v={{ version }}" />
   </head>
   <body>
     <header>
-      <h1>{{ service_name }} <small>v{{ version }}</small></h1>
-      <span id="status-badge" class="badge"></span>
+      <div class="brand">
+        <h1>{{ service_name }}</h1>
+        <small>v{{ version }}</small>
+      </div>
+      <div class="counts" id="counts" aria-label="Index counts">
+        <span class="count" data-key="notes"><b id="count-notes">–</b> notes</span>
+        <span class="count" data-key="folders"><b id="count-folders">–</b> folders</span>
+        <span class="count" data-key="tags"><b id="count-tags">–</b> tags</span>
+        <span class="count" data-key="tasks"><b id="count-tasks">–</b> tasks</span>
+      </div>
+      <form id="search-form" role="search">
+        <input id="search-input" type="search" placeholder="Search notes…" autocomplete="off" />
+      </form>
+      <div class="header-actions">
+        <span id="last-sync" class="last-sync" title=""></span>
+        <button id="sync-btn" type="button" title="Trigger an incremental sync">Sync</button>
+        <span id="status-badge" class="badge" title=""></span>
+      </div>
     </header>
     <main>{% block content %}{% endblock %}</main>
     <script src="/static/dashboard.js?v={{ version }}"></script>
