@@ -236,6 +236,11 @@ class JoplinClient:
     ) -> AsyncIterator[dict[str, Any]]:
         return self._paginate(f"/tags/{tag_id}/notes", {"fields": ",".join(fields)}, limit)
 
+    def get_note_tags(
+        self, note_id: str, *, fields: Sequence[str], limit: int | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        return self._paginate(f"/notes/{note_id}/tags", {"fields": ",".join(fields)}, limit)
+
     async def get_events(self, *, cursor: str | None = None, limit: int = 100) -> dict[str, Any]:
         """GET /events; returns ``{"items": [...], "cursor": str|None, "has_more": bool}``.
 

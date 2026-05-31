@@ -162,12 +162,18 @@ async def reindex_note(
         with repo.transaction():
             repo.mark_note_deleted(note_id)
         return False
+    # Refresh this note's tag membership directly (v0.2): incremental events no
+    # longer wait for a full rebuild to pick up tag changes. Fetched outside the txn.
+    note_tags = [t async for t in client.get_note_tags(note_id, fields=["id", "title"])]
     with repo.transaction():
         body_changed = repo.upsert_note(note, indexed_at=indexed_at)
         if body_changed:
             extracted = markdown_extract.extract(note_id, note.get("body") or "")
             repo.replace_tasks_for_note(note_id, extracted["tasks"], indexed_at=indexed_at)
             repo.replace_links_for_note(note_id, extracted["links"], indexed_at=indexed_at)
+        for tag in note_tags:
+            repo.upsert_tag(tag, indexed_at=indexed_at)
+        repo.replace_note_tags(note_id, [t["id"] for t in note_tags], indexed_at=indexed_at)
     return True
 
 

@@ -30,6 +30,26 @@ async def test_incremental_updates_changed_note(cfg: AppConfig, writer: sqlite3.
     assert repo.get_meta(db.META_LAST_EVENT_ID) == "1"  # cursor advanced
 
 
+async def test_incremental_refreshes_tag_membership(
+    cfg: AppConfig, writer: sqlite3.Connection
+) -> None:
+    """v0.2: a tag added in Joplin shows up after incremental sync (no rebuild)."""
+    fake = FakeJoplin()
+    fake.add_note("n1", "Title", "body")
+    repo = NoteRepository(writer)
+    async with fake.client() as client:
+        await services.full_rebuild(writer, client, cfg)
+        assert {n.id for n in repo.fetch_untagged()} == {"n1"}  # starts untagged
+
+        # Tag the note in Joplin, emit a note-update event, sync.
+        fake.add_tag("t1", "project", note_ids=("n1",))
+        fake.push_event(ITEM_TYPE_NOTE, "n1", 2)
+        await services.incremental_sync_once(writer, client, cfg)
+
+    assert {n.id for n in repo.fetch_untagged()} == set()  # n1 is now tagged
+    assert writer.execute("SELECT count(*) FROM note_tags WHERE note_id='n1'").fetchone()[0] == 1
+
+
 async def test_incremental_deletes_note(cfg: AppConfig, writer: sqlite3.Connection) -> None:
     fake = FakeJoplin()
     fake.add_note("n1", "Title", "body")

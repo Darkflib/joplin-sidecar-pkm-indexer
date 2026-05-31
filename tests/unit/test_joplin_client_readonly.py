@@ -36,6 +36,7 @@ def test_only_get_methods_are_public() -> None:
         "get_folders",
         "get_tags",
         "get_tag_notes",
+        "get_note_tags",
         "get_events",
     }
     assert public == expected, f"unexpected public surface: {public ^ expected}"

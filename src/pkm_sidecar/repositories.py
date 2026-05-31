@@ -158,6 +158,16 @@ class NoteRepository:
             (note_id, tag_id, indexed_at),
         )
 
+    def replace_note_tags(
+        self, note_id: str, tag_ids: list[str] | Iterator[str], *, indexed_at: int
+    ) -> None:
+        """Set a note's tag membership to exactly *tag_ids* (used by incremental sync)."""
+        self.conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+        self.conn.executemany(
+            "INSERT INTO note_tags(note_id, tag_id, indexed_at) VALUES (?, ?, ?)",
+            [(note_id, tag_id, indexed_at) for tag_id in tag_ids],
+        )
+
     def replace_tasks_for_note(
         self, note_id: str, tasks: Iterator[ExtractedTask] | list[ExtractedTask], *, indexed_at: int
     ) -> None:

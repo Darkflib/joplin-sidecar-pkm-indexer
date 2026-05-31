@@ -82,6 +82,11 @@ class FakeJoplin:
             return httpx.Response(200, text="JoplinClipperServer")
         if path == "/notes":
             return httpx.Response(200, json=self._page(list(self.notes.values()), params))
+        if path.startswith("/notes/") and path.endswith("/tags"):
+            nid = path.split("/")[2]
+            tag_ids = [tid for tid, notes in self.tag_notes.items() if nid in notes]
+            items = [self.tags[tid] for tid in sorted(tag_ids) if tid in self.tags]
+            return httpx.Response(200, json=self._page(items, params))
         if path.startswith("/notes/"):
             note = self.notes.get(path.split("/")[2])
             return httpx.Response(404, json={}) if note is None else httpx.Response(200, json=note)

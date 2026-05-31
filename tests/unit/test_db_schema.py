@@ -101,9 +101,7 @@ class TestReferentialTolerance:
         conn = db.open_writer_connection(db_path)
         conn.execute("INSERT INTO tags(id, title, indexed_at) VALUES ('t1', 'T', 0)")
         # note_id 'ghost' is not in notes — must not raise (no FK on note_tags).
-        conn.execute(
-            "INSERT INTO note_tags(note_id, tag_id, indexed_at) VALUES ('ghost', 't1', 0)"
-        )
+        conn.execute("INSERT INTO note_tags(note_id, tag_id, indexed_at) VALUES ('ghost', 't1', 0)")
         assert conn.execute("SELECT count(*) FROM note_tags").fetchone()[0] == 1
         conn.close()
 
