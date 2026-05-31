@@ -22,7 +22,7 @@ from pkm_sidecar.api_models import (
     StatusResponse,
 )
 from pkm_sidecar.errors import NotFoundError, scrub_token
-from pkm_sidecar.models import ExtractedLink, ExtractedTask, NoteSummary, SearchHit
+from pkm_sidecar.models import ExtractedLink, ExtractedTask, NoteSummary, ResourceRow, SearchHit
 from pkm_sidecar.repositories import NoteRepository
 from pkm_sidecar.security import verify_bearer_token
 
@@ -94,6 +94,7 @@ async def get_status(request: Request) -> StatusResponse:
             folder_count=counts.folder_count,
             tag_count=counts.tag_count,
             task_count=counts.task_count,
+            resource_count=counts.resource_count,
         ),
         indexing=IndexingStatus(
             last_full_index_at=_int_or_none(last_full),
@@ -176,6 +177,13 @@ async def note_tasks(note_id: str, repo: NoteRepository = Depends(get_repo)) -> 
 @router.get("/note/{note_id}/links", response_model=list[ExtractedLink])
 async def note_links(note_id: str, repo: NoteRepository = Depends(get_repo)) -> list[ExtractedLink]:
     return repo.get_links_for_note(note_id)
+
+
+@router.get("/note/{note_id}/resources", response_model=list[ResourceRow])
+async def note_resources(
+    note_id: str, repo: NoteRepository = Depends(get_repo)
+) -> list[ResourceRow]:
+    return repo.get_resources_for_note(note_id)
 
 
 # --- index commands --------------------------------------------------------

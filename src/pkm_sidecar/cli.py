@@ -281,6 +281,7 @@ async def _gather_status(cfg: AppConfig) -> dict[str, Any]:
             "folder_count": counts.folder_count,
             "tag_count": counts.tag_count,
             "task_count": counts.task_count,
+            "resource_count": counts.resource_count,
         },
         "indexing": {
             "last_full_index_at": int(last_full) if last_full else None,
@@ -311,7 +312,7 @@ def status(
     )
     typer.echo(
         f"db:      notes={d['note_count']} folders={d['folder_count']} "
-        f"tags={d['tag_count']} tasks={d['task_count']}"
+        f"tags={d['tag_count']} tasks={d['task_count']} resources={d['resource_count']}"
     )
     typer.echo(
         f"index:   last_full={ix['last_full_index_at']} "

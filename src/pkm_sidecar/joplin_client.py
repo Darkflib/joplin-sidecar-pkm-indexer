@@ -39,7 +39,9 @@ QueryValue = str | int
 redact_token = scrub_token
 
 # First path segment must be one of these (defence in depth against drift).
-ALLOWED_PATHS: frozenset[str] = frozenset({"ping", "notes", "folders", "tags", "events"})
+ALLOWED_PATHS: frozenset[str] = frozenset(
+    {"ping", "notes", "folders", "tags", "resources", "events"}
+)
 
 # httpx errors worth a conservative retry (transient transport/connection issues).
 _TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
@@ -240,6 +242,11 @@ class JoplinClient:
         self, note_id: str, *, fields: Sequence[str], limit: int | None = None
     ) -> AsyncIterator[dict[str, Any]]:
         return self._paginate(f"/notes/{note_id}/tags", {"fields": ",".join(fields)}, limit)
+
+    def get_resources(
+        self, *, fields: Sequence[str], limit: int | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        return self._paginate("/resources", {"fields": ",".join(fields)}, limit)
 
     async def get_events(self, *, cursor: str | None = None, limit: int = 100) -> dict[str, Any]:
         """GET /events; returns ``{"items": [...], "cursor": str|None, "has_more": bool}``.

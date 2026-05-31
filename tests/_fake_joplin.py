@@ -19,6 +19,7 @@ class FakeJoplin:
         self.folders: dict[str, dict[str, Any]] = {}
         self.tags: dict[str, dict[str, Any]] = {}
         self.tag_notes: dict[str, set[str]] = {}
+        self.resources: dict[str, dict[str, Any]] = {}
         self.events: list[dict[str, Any]] = []
         self._eid = 0
         self.page_limit = page_limit
@@ -58,6 +59,18 @@ class FakeJoplin:
         self.tags[tag_id] = {"id": tag_id, "title": title, "created_time": 0, "updated_time": 0}
         self.tag_notes[tag_id] = set(note_ids)
 
+    def add_resource(self, resource_id: str, title: str = "file", **kw: Any) -> None:
+        self.resources[resource_id] = {
+            "id": resource_id,
+            "title": title,
+            "mime": kw.get("mime", "application/octet-stream"),
+            "filename": kw.get("filename", ""),
+            "file_extension": kw.get("file_extension", ""),
+            "size": kw.get("size", 0),
+            "created_time": 0,
+            "updated_time": 0,
+        }
+
     def push_event(self, item_type: int, item_id: str, change: int) -> None:
         self._eid += 1
         self.events.append(
@@ -94,6 +107,8 @@ class FakeJoplin:
             return httpx.Response(200, json=self._page(list(self.folders.values()), params))
         if path == "/tags":
             return httpx.Response(200, json=self._page(list(self.tags.values()), params))
+        if path == "/resources":
+            return httpx.Response(200, json=self._page(list(self.resources.values()), params))
         if path.startswith("/tags/") and path.endswith("/notes"):
             tid = path.split("/")[2]
             items = [{"id": nid} for nid in sorted(self.tag_notes.get(tid, set()))]

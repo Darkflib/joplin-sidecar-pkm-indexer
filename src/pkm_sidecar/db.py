@@ -23,7 +23,7 @@ from pathlib import Path
 
 from pkm_sidecar.errors import DatabaseLockedError, SchemaVersionMismatchError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2 adds resources + note_resources (delete & resync to upgrade)
 SCHEMA_VERSION_KEY = "schema.version"
 
 # Well-known meta keys (PRD §9).
@@ -157,6 +157,7 @@ def reset_derived(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM extracted_tasks")
         conn.execute("DELETE FROM extracted_links")
         conn.execute("DELETE FROM note_tags")
+        conn.execute("DELETE FROM note_resources")
         conn.execute(
             "DELETE FROM meta WHERE key IN (?, ?)",
             (

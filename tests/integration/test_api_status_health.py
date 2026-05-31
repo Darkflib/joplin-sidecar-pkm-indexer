@@ -38,6 +38,7 @@ def test_status_ok_with_auth(cfg: AppConfig) -> None:
         "folder_count",
         "tag_count",
         "task_count",
+        "resource_count",
     }
     assert set(body["indexing"]) == {
         "last_full_index_at",

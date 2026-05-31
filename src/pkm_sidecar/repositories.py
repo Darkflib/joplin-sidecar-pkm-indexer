@@ -26,6 +26,7 @@ from pkm_sidecar.models import (
     ExtractedTask,
     NoteRow,
     NoteSummary,
+    ResourceRow,
     SearchHit,
     StatusCounts,
 )
@@ -168,6 +169,53 @@ class NoteRepository:
             [(note_id, tag_id, indexed_at) for tag_id in tag_ids],
         )
 
+    def upsert_resource(self, resource: dict[str, Any], *, indexed_at: int) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO resources(id, title, mime, filename, file_extension, size,
+                created_time, updated_time, indexed_at, deleted)
+            VALUES (:id, :title, :mime, :filename, :file_extension, :size,
+                :created_time, :updated_time, :indexed_at, 0)
+            ON CONFLICT(id) DO UPDATE SET
+                title=excluded.title, mime=excluded.mime, filename=excluded.filename,
+                file_extension=excluded.file_extension, size=excluded.size,
+                created_time=excluded.created_time, updated_time=excluded.updated_time,
+                indexed_at=excluded.indexed_at, deleted=0
+            """,
+            {
+                "id": resource["id"],
+                "title": resource.get("title"),
+                "mime": resource.get("mime"),
+                "filename": resource.get("filename"),
+                "file_extension": resource.get("file_extension"),
+                "size": resource.get("size"),
+                "created_time": resource.get("created_time"),
+                "updated_time": resource.get("updated_time"),
+                "indexed_at": indexed_at,
+            },
+        )
+
+    def rebuild_all_note_resources(self, *, indexed_at: int) -> None:
+        """Derive note_resources from extracted internal links pointing at resources."""
+        self.conn.execute("DELETE FROM note_resources")
+        self.conn.execute(
+            "INSERT OR IGNORE INTO note_resources(note_id, resource_id, indexed_at) "
+            "SELECT DISTINCT l.note_id, substr(l.target, 3), ? "
+            "FROM extracted_links l JOIN resources r ON r.id = substr(l.target, 3) "
+            "WHERE l.link_type = 'internal_joplin'",
+            (indexed_at,),
+        )
+
+    def rebuild_note_resources_for_note(self, note_id: str, *, indexed_at: int) -> None:
+        self.conn.execute("DELETE FROM note_resources WHERE note_id = ?", (note_id,))
+        self.conn.execute(
+            "INSERT OR IGNORE INTO note_resources(note_id, resource_id, indexed_at) "
+            "SELECT DISTINCT ?, substr(l.target, 3), ? FROM extracted_links l "
+            "JOIN resources r ON r.id = substr(l.target, 3) "
+            "WHERE l.note_id = ? AND l.link_type = 'internal_joplin'",
+            (note_id, indexed_at, note_id),
+        )
+
     def replace_tasks_for_note(
         self, note_id: str, tasks: Iterator[ExtractedTask] | list[ExtractedTask], *, indexed_at: int
     ) -> None:
@@ -206,21 +254,22 @@ class NoteRepository:
         self.conn.execute("UPDATE tags SET deleted = 1 WHERE id = ?", (tag_id,))
         self.conn.execute("DELETE FROM note_tags WHERE tag_id = ?", (tag_id,))
 
-    def sweep_orphans(self, run_started_at: int) -> tuple[int, int, int]:
-        """Mark rows untouched by a full rebuild as deleted; return (notes, folders, tags)."""
-        notes = self.conn.execute(
-            "UPDATE notes SET deleted = 1 WHERE deleted = 0 AND indexed_at < ?",
-            (run_started_at,),
-        ).rowcount
-        folders = self.conn.execute(
-            "UPDATE folders SET deleted = 1 WHERE deleted = 0 AND indexed_at < ?",
-            (run_started_at,),
-        ).rowcount
-        tags = self.conn.execute(
-            "UPDATE tags SET deleted = 1 WHERE deleted = 0 AND indexed_at < ?",
-            (run_started_at,),
-        ).rowcount
-        return notes, folders, tags
+    def mark_resource_deleted(self, resource_id: str) -> None:
+        self.conn.execute("UPDATE resources SET deleted = 1 WHERE id = ?", (resource_id,))
+
+    def sweep_orphans(self, run_started_at: int) -> tuple[int, int, int, int]:
+        """Mark rows untouched by a full rebuild as deleted.
+
+        Returns ``(notes, folders, tags, resources)`` swept.
+        """
+
+        def sweep(table: str) -> int:
+            return self.conn.execute(
+                f"UPDATE {table} SET deleted = 1 WHERE deleted = 0 AND indexed_at < ?",
+                (run_started_at,),
+            ).rowcount
+
+        return sweep("notes"), sweep("folders"), sweep("tags"), sweep("resources")
 
     # --- single-entity reads ----------------------------------------------
 
@@ -245,6 +294,16 @@ class NoteRepository:
             )
             for r in rows
         ]
+
+    def get_resources_for_note(self, note_id: str) -> list[ResourceRow]:
+        rows = self.conn.execute(
+            "SELECT r.id, r.title, r.mime, r.filename, r.file_extension, r.size, "
+            "r.created_time, r.updated_time "
+            "FROM note_resources nr JOIN resources r ON r.id = nr.resource_id "
+            "WHERE nr.note_id = ? AND r.deleted = 0 ORDER BY r.title",
+            (note_id,),
+        ).fetchall()
+        return [ResourceRow(**dict(r)) for r in rows]
 
     def get_links_for_note(self, note_id: str) -> list[ExtractedLink]:
         rows = self.conn.execute(
@@ -342,6 +401,7 @@ class NoteRepository:
             folder_count=scalar("SELECT count(*) FROM folders WHERE deleted = 0"),
             tag_count=scalar("SELECT count(*) FROM tags WHERE deleted = 0"),
             task_count=scalar("SELECT count(*) FROM extracted_tasks"),
+            resource_count=scalar("SELECT count(*) FROM resources WHERE deleted = 0"),
             deleted_count=scalar("SELECT count(*) FROM notes WHERE deleted = 1"),
         )
 

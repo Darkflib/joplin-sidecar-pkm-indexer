@@ -48,6 +48,8 @@ class TestInit:
             "extracted_tasks",
             "extracted_links",
             "index_runs",
+            "resources",
+            "note_resources",
         } <= names
 
     def test_schema_version_written(self, db_path: Path) -> None:

@@ -37,6 +37,7 @@ def test_only_get_methods_are_public() -> None:
         "get_tags",
         "get_tag_notes",
         "get_note_tags",
+        "get_resources",
         "get_events",
     }
     assert public == expected, f"unexpected public surface: {public ^ expected}"
@@ -45,7 +46,7 @@ def test_only_get_methods_are_public() -> None:
 async def test_disallowed_path_is_refused() -> None:
     client = joplin_client.JoplinClient("http://127.0.0.1:41184", "tok")
     with pytest.raises(JoplinBadResponseError):
-        await client._request("/resources/abc")  # not in ALLOWED_PATHS
+        await client._request("/settings/abc")  # not in ALLOWED_PATHS
     await client.aclose()
 
 

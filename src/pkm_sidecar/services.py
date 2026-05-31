@@ -50,10 +50,21 @@ NOTE_FIELDS = [
 ]
 FOLDER_FIELDS = ["id", "parent_id", "title", "created_time", "updated_time"]
 TAG_FIELDS = ["id", "title", "created_time", "updated_time"]
+RESOURCE_FIELDS = [
+    "id",
+    "title",
+    "mime",
+    "filename",
+    "file_extension",
+    "size",
+    "created_time",
+    "updated_time",
+]
 
 # Joplin model and change-type constants (Joplin Data API /events).
 ITEM_TYPE_NOTE = 1
 ITEM_TYPE_FOLDER = 2
+ITEM_TYPE_RESOURCE = 4
 ITEM_TYPE_TAG = 5
 CHANGE_DELETE = 3
 
@@ -171,6 +182,8 @@ async def reindex_note(
             extracted = markdown_extract.extract(note_id, note.get("body") or "")
             repo.replace_tasks_for_note(note_id, extracted["tasks"], indexed_at=indexed_at)
             repo.replace_links_for_note(note_id, extracted["links"], indexed_at=indexed_at)
+            # Refresh embedded-resource links for this note (v0.2).
+            repo.rebuild_note_resources_for_note(note_id, indexed_at=indexed_at)
         for tag in note_tags:
             repo.upsert_tag(tag, indexed_at=indexed_at)
         repo.replace_note_tags(note_id, [t["id"] for t in note_tags], indexed_at=indexed_at)
@@ -241,6 +254,14 @@ async def full_rebuild(
                     for note in chunk:
                         repo.upsert_note_tag(note["id"], tag_id, indexed_at=run_started)
 
+        # Resources (metadata only); note_resources is derived from links ∩ resources.
+        async for chunk in _chunked(client.get_resources(fields=RESOURCE_FIELDS), page):
+            with repo.transaction():
+                for resource in chunk:
+                    repo.upsert_resource(resource, indexed_at=run_started)
+        with repo.transaction():
+            repo.rebuild_all_note_resources(indexed_at=run_started)
+
         with repo.transaction():
             repo.sweep_orphans(run_started)
             repo.set_meta(db.META_LAST_FULL_INDEX_AT, str(started_at))
@@ -297,6 +318,7 @@ async def incremental_sync_once(
 
     needs_folder_refresh = False
     needs_tag_refresh = False
+    needs_resource_refresh = False
     try:
         try:
             batch = await client.get_events(cursor=cursor, limit=MAX_EVENTS_PER_TICK)
@@ -327,6 +349,12 @@ async def incremental_sync_once(
                         repo.mark_tag_deleted(item_id)
                 else:
                     needs_tag_refresh = True
+            elif item_type == ITEM_TYPE_RESOURCE and item_id:
+                if change == CHANGE_DELETE:
+                    with repo.transaction():
+                        repo.mark_resource_deleted(item_id)
+                else:
+                    needs_resource_refresh = True
 
         if needs_folder_refresh:
             async for chunk in _chunked(
@@ -342,6 +370,16 @@ async def incremental_sync_once(
                     for tag in chunk:
                         repo.upsert_tag(tag, indexed_at=run_started)
                         result.tags_seen += 1
+        if needs_resource_refresh:
+            async for chunk in _chunked(
+                client.get_resources(fields=RESOURCE_FIELDS), cfg.joplin.page_limit
+            ):
+                with repo.transaction():
+                    for resource in chunk:
+                        repo.upsert_resource(resource, indexed_at=run_started)
+            # A newly-known resource may now match existing note links.
+            with repo.transaction():
+                repo.rebuild_all_note_resources(indexed_at=run_started)
 
         # Advance cursor only after the full batch succeeded.
         with repo.transaction():

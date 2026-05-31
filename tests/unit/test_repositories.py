@@ -178,7 +178,7 @@ class TestStatusAndSweep:
         with repo.transaction():
             _note(repo, id="seen", updated_time=run_started + 1)  # indexed_at >= run_started
             _note(repo, id="orphan", updated_time=NOW)  # indexed_at < run_started
-        notes, _, _ = repo.sweep_orphans(run_started)
+        notes, _, _, _ = repo.sweep_orphans(run_started)
         assert notes == 1
         assert repo.get_note("orphan").deleted is True  # type: ignore[union-attr]
         assert repo.get_note("seen").deleted is False  # type: ignore[union-attr]

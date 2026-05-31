@@ -89,9 +89,21 @@ class SearchHit(BaseModel):
     parent_id: str | None = None
 
 
+class ResourceRow(BaseModel):
+    id: str
+    title: str | None = None
+    mime: str | None = None
+    filename: str | None = None
+    file_extension: str | None = None
+    size: int | None = None
+    created_time: int | None = None
+    updated_time: int | None = None
+
+
 class StatusCounts(BaseModel):
     note_count: int = 0
     folder_count: int = 0
     tag_count: int = 0
     task_count: int = 0
+    resource_count: int = 0
     deleted_count: int = 0

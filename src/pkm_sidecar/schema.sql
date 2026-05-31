@@ -80,6 +80,28 @@ CREATE TABLE IF NOT EXISTS extracted_links (
     FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
 );
 
+-- Resource (attachment) metadata only — no blob download/OCR (still out of scope).
+CREATE TABLE IF NOT EXISTS resources (
+    id             TEXT PRIMARY KEY,
+    title          TEXT,
+    mime           TEXT,
+    filename       TEXT,
+    file_extension TEXT,
+    size           INTEGER,
+    created_time   INTEGER,
+    updated_time   INTEGER,
+    indexed_at     INTEGER NOT NULL,
+    deleted        INTEGER NOT NULL DEFAULT 0
+);
+
+-- Derived from extracted_links ∩ resources (a note embeds a resource as :/<id>).
+CREATE TABLE IF NOT EXISTS note_resources (
+    note_id     TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    indexed_at  INTEGER NOT NULL,
+    PRIMARY KEY (note_id, resource_id)
+);
+
 CREATE TABLE IF NOT EXISTS index_runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at    INTEGER NOT NULL,
@@ -102,7 +124,9 @@ CREATE INDEX IF NOT EXISTS idx_notes_deleted      ON notes(deleted);
 CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id   ON note_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_note_id      ON extracted_tasks(note_id);
 CREATE INDEX IF NOT EXISTS idx_links_note_id      ON extracted_links(note_id);
+CREATE INDEX IF NOT EXISTS idx_links_target       ON extracted_links(target);
 CREATE INDEX IF NOT EXISTS idx_folders_parent_id  ON folders(parent_id);
+CREATE INDEX IF NOT EXISTS idx_note_resources_rid ON note_resources(resource_id);
 
 -- Full-text search over title + body, external-content table keyed on notes.rowid.
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(

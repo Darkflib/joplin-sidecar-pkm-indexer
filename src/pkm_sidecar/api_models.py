@@ -24,6 +24,7 @@ class DatabaseStatus(BaseModel):
     folder_count: int
     tag_count: int
     task_count: int
+    resource_count: int = 0
 
 
 class IndexingStatus(BaseModel):

@@ -39,6 +39,27 @@ async def test_full_rebuild_indexes_all_entities(
     assert [h.id for h in repo.fts_search("RabbitMQ")] == ["n2"]
 
 
+async def test_rebuild_indexes_resources_and_links_them(
+    cfg: AppConfig, writer: sqlite3.Connection
+) -> None:
+    """v0.2: resources are indexed and note_resources derived from embedded links."""
+    rid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    fake = FakeJoplin()
+    fake.add_note("n1", "Has attachment", f"see ![diagram](:/{rid})")
+    fake.add_note("n2", "No attachment", "plain")
+    fake.add_resource(rid, title="diagram.png", mime="image/png", size=1234)
+
+    async with fake.client() as client:
+        await services.full_rebuild(writer, client, cfg)
+
+    repo = NoteRepository(writer)
+    assert repo.get_status_counts().resource_count == 1
+    res = repo.get_resources_for_note("n1")
+    assert [r.id for r in res] == [rid]
+    assert res[0].mime == "image/png"
+    assert repo.get_resources_for_note("n2") == []
+
+
 async def test_rebuild_sweeps_orphans(cfg: AppConfig, writer: sqlite3.Connection) -> None:
     fake = FakeJoplin()
     fake.add_note("n1", "Keep", "x")
