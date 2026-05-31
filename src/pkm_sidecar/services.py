@@ -100,6 +100,12 @@ def _start_run(conn: sqlite3.Connection, mode: str, started_at: int) -> int:
     return int(cur.lastrowid or 0)
 
 
+def start_run_record(conn: sqlite3.Connection, mode: str) -> tuple[int, int]:
+    """Create the index_runs row up front so the API can return its id in a 202."""
+    started_at = _now()
+    return _start_run(conn, mode, started_at), started_at
+
+
 def _finish_run(conn: sqlite3.Connection, result: IndexRunResult) -> None:
     conn.execute(
         "UPDATE index_runs SET completed_at=?, status=?, notes_seen=?, notes_updated=?, "
@@ -169,13 +175,18 @@ async def reindex_note(
 
 
 async def full_rebuild(
-    conn: sqlite3.Connection, client: JoplinClient, cfg: AppConfig
+    conn: sqlite3.Connection, client: JoplinClient, cfg: AppConfig, *, run_id: int | None = None
 ) -> IndexRunResult:
-    """Rebuild the whole index from Joplin (PRD §11.1)."""
+    """Rebuild the whole index from Joplin (PRD §11.1).
+
+    If *run_id* is given (the API pre-created the row to return in its 202), reuse
+    it; otherwise create the index_runs row here.
+    """
     started_at = _now()
     run_started = _marker()  # ns stamp for indexed_at / sweep_orphans
     repo = NoteRepository(conn)
-    run_id = _start_run(conn, "full", started_at)
+    if run_id is None:
+        run_id = _start_run(conn, "full", started_at)
     result = IndexRunResult(run_id=run_id, mode="full", status="success")
     log_event(logger, "index.full.started", run_id=run_id)
     page = cfg.joplin.page_limit

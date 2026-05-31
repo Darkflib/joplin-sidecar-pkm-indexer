@@ -8,18 +8,21 @@ from __future__ import annotations
 
 import os
 import time
+from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from pkm_sidecar import __version__, db
 from pkm_sidecar.api_models import (
     DatabaseStatus,
     IndexingStatus,
     JoplinStatus,
+    NoteDetail,
     RuntimeStatus,
     StatusResponse,
 )
-from pkm_sidecar.errors import scrub_token
+from pkm_sidecar.errors import NotFoundError, scrub_token
+from pkm_sidecar.models import ExtractedLink, ExtractedTask, NoteSummary, SearchHit
 from pkm_sidecar.repositories import NoteRepository
 from pkm_sidecar.security import verify_bearer_token
 
@@ -34,6 +37,15 @@ async def require_bearer(request: Request) -> None:
 
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_bearer)])
+
+
+def get_repo(request: Request) -> Iterator[NoteRepository]:
+    """Per-request read-only repository (closed when the request finishes)."""
+    reader = db.open_reader_connection(request.app.state.settings.database.path)
+    try:
+        yield NoteRepository(reader)
+    finally:
+        reader.close()
 
 
 async def _cached_reachable(request: Request) -> bool:
@@ -90,3 +102,100 @@ async def get_status(request: Request) -> StatusResponse:
         ),
         runtime=RuntimeStatus(launched_by=os.environ.get("JOPLIN_SIDECAR_LAUNCHED_BY")),
     )
+
+
+# --- workflow views --------------------------------------------------------
+
+
+@router.get("/notes/recent", response_model=list[NoteSummary])
+async def notes_recent(
+    repo: NoteRepository = Depends(get_repo), limit: int = Query(50, ge=1, le=500)
+) -> list[NoteSummary]:
+    return repo.fetch_recent(limit=limit)
+
+
+@router.get("/notes/inbox", response_model=list[NoteSummary])
+async def notes_inbox(
+    request: Request,
+    repo: NoteRepository = Depends(get_repo),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[NoteSummary]:
+    names = request.app.state.settings.indexing.inbox_folder_names
+    return repo.fetch_inbox(names, limit=limit)
+
+
+@router.get("/notes/untagged", response_model=list[NoteSummary])
+async def notes_untagged(
+    repo: NoteRepository = Depends(get_repo), limit: int = Query(100, ge=1, le=500)
+) -> list[NoteSummary]:
+    return repo.fetch_untagged(limit=limit)
+
+
+@router.get("/notes/todos", response_model=list[NoteSummary])
+async def notes_todos(
+    repo: NoteRepository = Depends(get_repo), limit: int = Query(100, ge=1, le=500)
+) -> list[NoteSummary]:
+    return repo.fetch_todos(limit=limit)
+
+
+@router.get("/notes/stale", response_model=list[NoteSummary])
+async def notes_stale(
+    request: Request,
+    repo: NoteRepository = Depends(get_repo),
+    days: int | None = Query(None, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[NoteSummary]:
+    effective_days = days if days is not None else request.app.state.settings.indexing.stale_days
+    return repo.fetch_stale(days=effective_days, limit=limit)
+
+
+@router.get("/search", response_model=list[SearchHit])
+async def search(
+    repo: NoteRepository = Depends(get_repo),
+    q: str = Query(..., min_length=1),
+    limit: int = Query(50, ge=1, le=500),
+) -> list[SearchHit]:
+    if not q.strip():
+        raise HTTPException(status_code=422, detail="q must not be blank")
+    return repo.fts_search(q, limit=limit)
+
+
+@router.get("/note/{note_id}", response_model=NoteDetail)
+async def note_detail(note_id: str, repo: NoteRepository = Depends(get_repo)) -> NoteDetail:
+    row = repo.get_note(note_id)
+    if row is None or row.deleted:
+        raise NotFoundError(f"Note {note_id} is not in the index.")
+    return NoteDetail(**row.model_dump(exclude={"body_hash", "indexed_at", "deleted"}))
+
+
+@router.get("/note/{note_id}/tasks", response_model=list[ExtractedTask])
+async def note_tasks(note_id: str, repo: NoteRepository = Depends(get_repo)) -> list[ExtractedTask]:
+    return repo.get_tasks_for_note(note_id)
+
+
+@router.get("/note/{note_id}/links", response_model=list[ExtractedLink])
+async def note_links(note_id: str, repo: NoteRepository = Depends(get_repo)) -> list[ExtractedLink]:
+    return repo.get_links_for_note(note_id)
+
+
+# --- index commands --------------------------------------------------------
+
+
+@router.post("/index/rebuild", status_code=202)
+async def index_rebuild(request: Request) -> dict[str, object]:
+    run_id, started_at = request.app.state.indexer.dispatch_rebuild()
+    return {"run_id": run_id, "mode": "full", "started_at": started_at}
+
+
+@router.post("/index/sync", status_code=202)
+async def index_sync(request: Request) -> dict[str, object]:
+    request.app.state.indexer.dispatch_sync()
+    return {"accepted": True}
+
+
+@router.post("/index/note/{note_id}", status_code=202)
+async def index_note(note_id: str, request: Request) -> dict[str, object]:
+    found = await request.app.state.indexer.reindex_one(note_id)
+    if not found:
+        raise NotFoundError(f"Joplin has no note {note_id}.")
+    return {"accepted": True, "note_id": note_id}

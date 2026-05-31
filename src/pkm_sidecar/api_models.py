@@ -43,3 +43,20 @@ class StatusResponse(BaseModel):
     database: DatabaseStatus
     indexing: IndexingStatus
     runtime: RuntimeStatus
+
+
+class NoteDetail(BaseModel):
+    """Single-note view — the only response that carries the full body (PRD §13.2)."""
+
+    id: str
+    parent_id: str | None = None
+    title: str
+    body: str
+    created_time: int | None = None
+    updated_time: int | None = None
+    user_created_time: int | None = None
+    user_updated_time: int | None = None
+    is_todo: bool = False
+    todo_due: int | None = None
+    todo_completed: int | None = None
+    source_url: str | None = None

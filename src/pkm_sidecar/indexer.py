@@ -34,6 +34,7 @@ class IndexerHandle:
         self._lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._tasks: set[asyncio.Task[object]] = set()
         self._rebuild_in_progress = False
         self._last_result: IndexRunResult | None = None
         self._last_error: str | None = None
@@ -57,13 +58,13 @@ class IndexerHandle:
 
     # --- entry points ------------------------------------------------------
 
-    async def run_full_rebuild(self) -> IndexRunResult:
-        if self._rebuild_in_progress:
-            raise IndexInProgressError("A full rebuild is already running.")
+    async def _do_rebuild(self, run_id: int | None = None) -> IndexRunResult:
         async with self._lock:
             self._rebuild_in_progress = True
             try:
-                result = await services.full_rebuild(self.conn, self.client, self.cfg)
+                result = await services.full_rebuild(
+                    self.conn, self.client, self.cfg, run_id=run_id
+                )
                 self._last_result = result
                 self._last_error = result.message if result.status != "success" else None
                 return result
@@ -72,6 +73,44 @@ class IndexerHandle:
                 raise
             finally:
                 self._rebuild_in_progress = False
+
+    async def run_full_rebuild(self) -> IndexRunResult:
+        if self._rebuild_in_progress:
+            raise IndexInProgressError("A full rebuild is already running.")
+        return await self._do_rebuild()
+
+    def dispatch_rebuild(self) -> tuple[int, int]:
+        """Start a rebuild in the background; return (run_id, started_at) for a 202.
+
+        The index_runs row is created synchronously so the caller gets a run_id,
+        and ``rebuild_in_progress`` flips immediately so a second request 409s.
+        """
+        if self._rebuild_in_progress:
+            raise IndexInProgressError("A full rebuild is already running.")
+        run_id, started_at = services.start_run_record(self.conn, "full")
+        self._rebuild_in_progress = True
+        self._track(asyncio.create_task(self._do_rebuild(run_id)))
+        return run_id, started_at
+
+    def dispatch_sync(self) -> None:
+        """Fire-and-forget an incremental sync pass."""
+        self._track(asyncio.create_task(self.run_incremental_once()))
+
+    async def reindex_one(self, note_id: str) -> bool:
+        """Re-index a single note under the lock; returns False if Joplin lacks it."""
+        async with self._lock:
+            return await services.reindex_note(self.conn, self.client, note_id)
+
+    def _track(self, task: asyncio.Task[object]) -> None:
+        self._tasks.add(task)
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, task: asyncio.Task[object]) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            exc = task.exception()
+            self._last_error = f"{type(exc).__name__}: {exc}"
+            logger.error("Dispatched index task failed: %s", type(exc).__name__)
 
     async def run_incremental_once(self) -> IndexRunResult:
         try:
@@ -104,6 +143,9 @@ class IndexerHandle:
                 self._task.cancel()
             finally:
                 self._task = None
+        # Cancel any in-flight dispatched rebuild/sync tasks.
+        for task in list(self._tasks):
+            task.cancel()
 
     async def _run_loop(self) -> None:
         log_event(logger, "service.start", component="indexer")
