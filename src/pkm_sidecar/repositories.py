@@ -24,6 +24,8 @@ from pkm_sidecar import db
 from pkm_sidecar.models import (
     ExtractedLink,
     ExtractedTask,
+    GraphEdge,
+    GraphNode,
     NoteRow,
     NoteSummary,
     ResourceRow,
@@ -366,6 +368,41 @@ class NoteRepository:
             (cutoff_ms, limit),
         ).fetchall()
         return [_summary(r) for r in rows]
+
+    def get_backlinks(self, note_id: str, limit: int = 100) -> list[NoteSummary]:
+        """Notes that link to *note_id* via an internal `:/<id>` link (PRD v0.2)."""
+        cols = ", ".join("n." + c for c in _SUMMARY_COLS.split(", "))
+        rows = self.conn.execute(
+            f"SELECT DISTINCT {cols} FROM extracted_links l "
+            "JOIN notes n ON n.id = l.note_id "
+            "WHERE l.link_type = 'internal_joplin' AND l.target = ':/' || ? "
+            "AND n.deleted = 0 ORDER BY n.updated_time DESC LIMIT ?",
+            (note_id, limit),
+        ).fetchall()
+        return [_summary(r) for r in rows]
+
+    def get_graph(self, limit: int = 2000) -> tuple[list[GraphNode], list[GraphEdge], bool]:
+        """Note→note internal-link graph. Returns (nodes, edges, truncated)."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT l.note_id AS source, substr(l.target, 3) AS target "
+            "FROM extracted_links l "
+            "JOIN notes src ON src.id = l.note_id AND src.deleted = 0 "
+            "JOIN notes tgt ON tgt.id = substr(l.target, 3) AND tgt.deleted = 0 "
+            "WHERE l.link_type = 'internal_joplin' "
+            "LIMIT ?",
+            (limit + 1,),
+        ).fetchall()
+        truncated = len(rows) > limit
+        edges = [GraphEdge(source=r["source"], target=r["target"]) for r in rows[:limit]]
+        node_ids = {e.source for e in edges} | {e.target for e in edges}
+        nodes: list[GraphNode] = []
+        if node_ids:
+            placeholders = ", ".join("?" for _ in node_ids)
+            title_rows = self.conn.execute(
+                f"SELECT id, title FROM notes WHERE id IN ({placeholders})", tuple(node_ids)
+            ).fetchall()
+            nodes = [GraphNode(id=r["id"], title=r["title"]) for r in title_rows]
+        return nodes, edges, truncated
 
     def fts_search(self, query: str, limit: int = 50) -> list[SearchHit]:
         expr = build_fts_match_expression(query)

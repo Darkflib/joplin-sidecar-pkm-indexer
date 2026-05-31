@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pkm_sidecar import __version__, db
 from pkm_sidecar.api_models import (
     DatabaseStatus,
+    GraphResponse,
     IndexingStatus,
     JoplinStatus,
     NoteDetail,
@@ -184,6 +185,21 @@ async def note_resources(
     note_id: str, repo: NoteRepository = Depends(get_repo)
 ) -> list[ResourceRow]:
     return repo.get_resources_for_note(note_id)
+
+
+@router.get("/note/{note_id}/backlinks", response_model=list[NoteSummary])
+async def note_backlinks(
+    note_id: str, repo: NoteRepository = Depends(get_repo), limit: int = Query(100, ge=1, le=500)
+) -> list[NoteSummary]:
+    return repo.get_backlinks(note_id, limit=limit)
+
+
+@router.get("/graph", response_model=GraphResponse)
+async def graph(
+    repo: NoteRepository = Depends(get_repo), limit: int = Query(2000, ge=1, le=20000)
+) -> GraphResponse:
+    nodes, edges, truncated = repo.get_graph(limit=limit)
+    return GraphResponse(nodes=nodes, edges=edges, truncated=truncated)
 
 
 # --- index commands --------------------------------------------------------

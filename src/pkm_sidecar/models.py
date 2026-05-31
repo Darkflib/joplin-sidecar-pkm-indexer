@@ -100,6 +100,16 @@ class ResourceRow(BaseModel):
     updated_time: int | None = None
 
 
+class GraphNode(BaseModel):
+    id: str
+    title: str
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+
+
 class StatusCounts(BaseModel):
     note_count: int = 0
     folder_count: int = 0

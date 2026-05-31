@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from pkm_sidecar.models import GraphEdge, GraphNode
+
 
 class HealthResponse(BaseModel):
     ok: bool
@@ -44,6 +46,14 @@ class StatusResponse(BaseModel):
     database: DatabaseStatus
     indexing: IndexingStatus
     runtime: RuntimeStatus
+
+
+class GraphResponse(BaseModel):
+    """Note-to-note internal link graph (PRD v0.2 backlinks/graph)."""
+
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+    truncated: bool = False
 
 
 class NoteDetail(BaseModel):
