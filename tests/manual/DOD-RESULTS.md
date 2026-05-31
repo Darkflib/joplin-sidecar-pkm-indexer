@@ -32,6 +32,20 @@ insert. Since the index only soft-deletes (FK `ON DELETE` actions never fire), t
 failures. Removed those FKs (kept the always-satisfiable `extracted_*→notes` FKs);
 views already tolerate missing parents via JOINs. Regression tests added.
 
+## Launcher integration smoke (2026-05-31)
+
+Verified by replicating the launcher's `processManager.ts` behaviour headlessly
+(the Joplin GUI plugin uses the same `spawn` + health-poll + SIGTERM logic):
+
+| Contract | Result |
+|---|---|
+| spawn `uv run --project <repo> pkm-sidecar serve …` with env blocklist stripped | ✅ |
+| `GET /health` → 200 within 0.5 s (launcher 2000 ms timeout) | ✅ |
+| `runtime.launched_by` reports `joplin-sidecar-launcher` | ✅ |
+| Joplin reachable from the spawned process | ✅ |
+| `SIGTERM` → clean exit in 0.18 s (< 3 s SIGKILL deadline) | ✅ (code 143) |
+| no token in captured stdout/stderr (Copy-diag safe) | ✅ |
+
 ## Notes
 
 - `inbox` is empty because this vault has no folder named in the default
