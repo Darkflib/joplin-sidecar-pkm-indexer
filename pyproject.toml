@@ -29,6 +29,7 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
+    "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
     "pre-commit>=3.7",
@@ -94,6 +95,17 @@ extend-immutable-calls = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "integration: real FastAPI app + mocked Joplin + tmp sqlite",
+    "manual: requires a running Joplin; skipped in CI (see tests/manual/CHECKLIST.md)",
+]
+
+[tool.coverage.run]
+source = ["pkm_sidecar"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "raise NotImplementedError", "@abc.abstractmethod"]
 
 [tool.mypy]
 python_version = "3.12"
