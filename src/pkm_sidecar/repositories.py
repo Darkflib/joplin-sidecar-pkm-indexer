@@ -369,6 +369,26 @@ class NoteRepository:
         ).fetchall()
         return [_summary(r) for r in rows]
 
+    def fetch_review(self, days: int = 90, limit: int = 100) -> list[NoteSummary]:
+        """Notes likely needing review (PRD §4.6, defined in v0.2).
+
+        Heuristic: a note is *stale* (older than *days*) AND is either untagged or
+        has unchecked extracted tasks — i.e. old notes that are uncategorised or
+        carry unfinished work.
+        """
+        cutoff_ms = (int(time.time()) - days * 86400) * 1000
+        rows = self.conn.execute(
+            f"SELECT {_SUMMARY_COLS} FROM notes n WHERE n.deleted = 0 "
+            "AND COALESCE(n.user_updated_time, n.updated_time) < ? "
+            "AND ("
+            "  NOT EXISTS (SELECT 1 FROM note_tags t WHERE t.note_id = n.id) "
+            "  OR EXISTS (SELECT 1 FROM extracted_tasks et WHERE et.note_id = n.id AND et.checked = 0)"
+            ") "
+            "ORDER BY COALESCE(n.user_updated_time, n.updated_time) ASC LIMIT ?",
+            (cutoff_ms, limit),
+        ).fetchall()
+        return [_summary(r) for r in rows]
+
     def get_backlinks(self, note_id: str, limit: int = 100) -> list[NoteSummary]:
         """Notes that link to *note_id* via an internal `:/<id>` link (PRD v0.2)."""
         cols = ", ".join("n." + c for c in _SUMMARY_COLS.split(", "))

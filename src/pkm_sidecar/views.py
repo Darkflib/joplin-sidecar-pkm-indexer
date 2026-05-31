@@ -151,6 +151,17 @@ async def notes_stale(
     return repo.fetch_stale(days=effective_days, limit=limit)
 
 
+@router.get("/notes/review", response_model=list[NoteSummary])
+async def notes_review(
+    request: Request,
+    repo: NoteRepository = Depends(get_repo),
+    days: int | None = Query(None, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[NoteSummary]:
+    effective_days = days if days is not None else request.app.state.settings.indexing.stale_days
+    return repo.fetch_review(days=effective_days, limit=limit)
+
+
 @router.get("/search", response_model=list[SearchHit])
 async def search(
     repo: NoteRepository = Depends(get_repo),

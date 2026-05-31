@@ -121,14 +121,16 @@ settings and how to supply tokens (the launcher has no env-var UI).
   and never stored in SQLite. A redaction filter scrubs registered secrets from
   every log record; note bodies are never logged.
 
-## Limitations (v0.1)
+## Limitations
 
-- Attachments/resources aren't indexed beyond the existing `source_url` field.
-- The "notes likely requiring review" view is deferred to v0.2 (no defined heuristic).
-- Tag membership is rebuilt by full rebuild only; incremental note edits don't
-  refresh a note's tags, so tag views can be stale between rebuilds.
+- Resource indexing is metadata only (id/title/mime/filename/size) — no blob
+  download or OCR.
+- Graph data is available via `GET /api/graph`; the dashboard has no graph
+  visualisation yet (the strict CSP forbids loading a CDN graph library).
 - Windows under the launcher is experimental; the `0600` token-file permission is
   a no-op there.
+- Upgrading the index schema (e.g. v1 → v2) is delete-and-resync — the index is
+  derived state, so there's no migration step.
 
 ## v0.1 non-goals
 
