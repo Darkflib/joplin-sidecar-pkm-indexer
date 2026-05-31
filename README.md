@@ -97,6 +97,10 @@ Exit codes: `0` ok · `1` runtime failure · `2` config error · `3` non-localho
 bind without `--allow-non-localhost` · `4` indexing finished with errors ·
 `5` event cursor invalid (run a rebuild) · `130` interrupted.
 
+> **Tip:** the `inbox` view matches folders named in `[indexing].inbox_folder_names`
+> (default `Inbox`, `00 Inbox`, `_Inbox`). If it comes back empty, set this to your
+> vault's actual inbox folder name(s).
+
 ## Launcher integration
 
 This sidecar is designed to be started by the
