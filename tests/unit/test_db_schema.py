@@ -84,17 +84,27 @@ class TestPragmas:
         conn.close()
 
 
-class TestForeignKeys:
-    def test_parent_id_set_null_on_folder_delete(self, db_path: Path) -> None:
+class TestReferentialTolerance:
+    def test_note_with_unknown_parent_is_accepted(self, db_path: Path) -> None:
+        # Joplin can hand us a note whose parent folder isn't in /folders; the
+        # derived index must record it rather than fail the insert (no parent FK).
         conn = db.open_writer_connection(db_path)
-        conn.execute("INSERT INTO folders(id, title, indexed_at) VALUES ('f1', 'F', 0)")
         conn.execute(
             "INSERT INTO notes(id, parent_id, title, body, body_hash, is_todo, indexed_at) "
-            "VALUES ('n1', 'f1', 'N', 'b', 'h', 0, 0)"
+            "VALUES ('n1', 'missing-folder', 'N', 'b', 'h', 0, 0)"
         )
-        conn.execute("DELETE FROM folders WHERE id='f1'")
         row = conn.execute("SELECT parent_id FROM notes WHERE id='n1'").fetchone()
-        assert row["parent_id"] is None
+        assert row["parent_id"] == "missing-folder"
+        conn.close()
+
+    def test_note_tag_with_unknown_note_is_accepted(self, db_path: Path) -> None:
+        conn = db.open_writer_connection(db_path)
+        conn.execute("INSERT INTO tags(id, title, indexed_at) VALUES ('t1', 'T', 0)")
+        # note_id 'ghost' is not in notes — must not raise (no FK on note_tags).
+        conn.execute(
+            "INSERT INTO note_tags(note_id, tag_id, indexed_at) VALUES ('ghost', 't1', 0)"
+        )
+        assert conn.execute("SELECT count(*) FROM note_tags").fetchone()[0] == 1
         conn.close()
 
 

@@ -32,10 +32,11 @@ CREATE TABLE IF NOT EXISTS notes (
     todo_completed    INTEGER,
     source_url        TEXT,
     indexed_at        INTEGER NOT NULL,
-    deleted           INTEGER NOT NULL DEFAULT 0,
-    -- ON DELETE SET NULL: Joplin can delete a folder while notes still point at
-    -- it, and event ordering is not guaranteed; keep the note, orphan the link.
-    FOREIGN KEY (parent_id) REFERENCES folders(id) ON DELETE SET NULL
+    deleted           INTEGER NOT NULL DEFAULT 0
+    -- No FK on parent_id: Joplin returns notes whose parent folder may not be in
+    -- /folders (Trash/Conflicts, fetch races). This is a derived index that only
+    -- soft-deletes, so referential enforcement would just spuriously fail inserts.
+    -- parent_id is recorded as-is; folder views LEFT/INNER JOIN and tolerate gaps.
 );
 
 CREATE TABLE IF NOT EXISTS tags (
@@ -47,13 +48,14 @@ CREATE TABLE IF NOT EXISTS tags (
     deleted      INTEGER NOT NULL DEFAULT 0
 );
 
+-- No FKs: a tag's note list (from /tags/{id}/notes) can reference a note absent
+-- from our index (Trash/Conflicts). mark_tag_deleted prunes rows explicitly, and
+-- views JOIN to notes(deleted=0), so orphan rows are harmless.
 CREATE TABLE IF NOT EXISTS note_tags (
     note_id    TEXT NOT NULL,
     tag_id     TEXT NOT NULL,
     indexed_at INTEGER NOT NULL,
-    PRIMARY KEY (note_id, tag_id),
-    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
-    FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+    PRIMARY KEY (note_id, tag_id)
 );
 
 CREATE TABLE IF NOT EXISTS extracted_tasks (
