@@ -1,0 +1,5 @@
+-- pkm-sidecar SQLite schema.
+--
+-- Reserved for the db subsystem (PRD §9). This file is packaged as data so it
+-- can be loaded via importlib.resources.files("pkm_sidecar").joinpath("schema.sql").
+-- Intentionally empty in the scaffold.
