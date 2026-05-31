@@ -279,13 +279,9 @@ def load_config(
         # Pydantic ValidationError is a ValueError subclass.
         raise ConfigError(f"Invalid configuration: {exc}") from exc
 
-    # Bind-address safety (PRD §7.3, §8.1).
-    if not is_loopback_host(cfg.server.host) and not cfg.server.allow_non_localhost:
-        raise ConfigError(
-            f"Refusing to bind to non-localhost host {cfg.server.host!r}. "
-            "Pass --allow-non-localhost to override."
-        )
-
+    # Bind-address safety is enforced by `serve` (security.validate_bind_address →
+    # exit 3), not here: non-serve commands (status, db path) don't bind, so a
+    # non-local host in config should not stop them from loading.
     _ensure_directories(cfg)
 
     if cfg.joplin.token is None:

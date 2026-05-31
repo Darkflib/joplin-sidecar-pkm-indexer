@@ -148,15 +148,16 @@ class TestPrecedence:
 
 
 class TestBindSafety:
-    def test_non_localhost_rejected_by_default(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match="non-localhost"):
-            _load(tmp_path, env={"PKM_SIDECAR_HOST": "0.0.0.0"})
+    # Enforcement moved to serve/security (exit 3); load_config just records the host.
+    def test_load_accepts_non_localhost_host(self, tmp_path: Path) -> None:
+        cfg = _load(tmp_path, env={"PKM_SIDECAR_HOST": "0.0.0.0"})
+        assert cfg.server.host == "0.0.0.0"
+        assert cfg.server.allow_non_localhost is False
 
-    def test_non_localhost_allowed_with_override(self, tmp_path: Path) -> None:
+    def test_allow_non_localhost_flag_recorded(self, tmp_path: Path) -> None:
         cfg = _load(
             tmp_path, env={"PKM_SIDECAR_HOST": "0.0.0.0"}, cli={"allow_non_localhost": True}
         )
-        assert cfg.server.host == "0.0.0.0"
         assert cfg.server.allow_non_localhost is True
 
 
