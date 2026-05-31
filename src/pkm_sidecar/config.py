@@ -1,5 +1,305 @@
-"""Configuration loading and precedence (CLI > env > TOML > defaults).
+"""Configuration loading with precedence: CLI > env > TOML > defaults (PRD §7).
 
-Reserved for the config subsystem (PRD §7). Intentionally empty in the
-scaffold so other modules can import it without ``ImportError`` once it lands.
+The precedence is hand-rolled (not ``pydantic-settings``) so the layering is
+explicit and testable. The resulting :class:`AppConfig` is immutable and stores
+both tokens as :class:`~pydantic.SecretStr` so they cannot leak through ``repr``
+or ``model_dump`` (PRD §8.3).
+
+Bind validation: this module owns the pure :func:`is_loopback_host` predicate
+(no FastAPI/httpx imports). The security subsystem imports it so there is a
+single definition of "what counts as localhost".
+
+Ephemeral sidecar API token: per the architecture decision, config does *not*
+mint a token. When ``PKM_SIDECAR_API_TOKEN`` is unset, ``server.api_token`` is
+``None``; the security subsystem mints an ephemeral token at startup (PRD §8.2).
 """
+
+from __future__ import annotations
+
+import ipaddress
+import logging
+import tomllib
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import AnyHttpUrl as _AnyHttpUrl
+from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter, field_validator
+
+from pkm_sidecar.errors import ConfigError
+
+logger = logging.getLogger("pkm_sidecar.config")
+
+DEFAULT_DB_PATH = Path("~/.local/share/pkm-sidecar/index.sqlite3")
+DEFAULT_CONFIG_PATH = Path("~/.config/pkm-sidecar/config.toml")
+
+_HTTP_URL_ADAPTER: TypeAdapter[_AnyHttpUrl] = TypeAdapter(_AnyHttpUrl)
+
+
+# --- helpers ---------------------------------------------------------------
+
+
+def is_loopback_host(host: str) -> bool:
+    """Return True if *host* is a loopback bind address.
+
+    Accepts the literal string ``localhost`` by convention (resolving it via DNS
+    is unsafe — ``/etc/hosts`` could map it elsewhere) plus any address that
+    :mod:`ipaddress` reports as loopback (``127.0.0.0/8``, ``::1``).
+    """
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def redact(value: str | SecretStr | None) -> str:
+    """Format a token-like value as ``set`` / ``unset`` for status output."""
+    if value is None:
+        return "unset"
+    if isinstance(value, SecretStr):
+        return "set" if value.get_secret_value() else "unset"
+    return "set" if value else "unset"
+
+
+def _normalise_base_url(value: str) -> str:
+    """Validate *value* is an http(s) URL and return it without a trailing slash."""
+    _HTTP_URL_ADAPTER.validate_python(value)
+    return value.rstrip("/")
+
+
+# --- section models --------------------------------------------------------
+
+
+class ServerConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    host: str = "127.0.0.1"
+    port: int = 8765
+    api_token: SecretStr | None = None
+    allow_non_localhost: bool = False
+
+
+class JoplinConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    base_url: str = "http://127.0.0.1:41184"
+    token: SecretStr | None = None
+    event_poll_seconds: int = 10
+    page_limit: int = 100
+
+    @field_validator("base_url")
+    @classmethod
+    def _check_base_url(cls, v: str) -> str:
+        return _normalise_base_url(v)
+
+
+class DatabaseConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    path: Path = DEFAULT_DB_PATH
+
+    @field_validator("path")
+    @classmethod
+    def _expand(cls, v: Path) -> Path:
+        return v.expanduser()
+
+
+class LoggingConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+
+
+class IndexingConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    stale_days: int = 90
+    inbox_folder_names: list[str] = ["Inbox", "00 Inbox", "_Inbox"]
+
+
+class AppConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    server: ServerConfig
+    joplin: JoplinConfig
+    database: DatabaseConfig
+    logging: LoggingConfig
+    indexing: IndexingConfig
+    # Source TOML file, if one was loaded (None means env/defaults only).
+    config_path: Path | None = None
+    # Always False from config: the security subsystem mints and tracks any
+    # ephemeral token at runtime (PRD §8.2). Kept for status-payload symmetry.
+    api_token_was_generated: bool = False
+
+
+# --- raw-value resolution --------------------------------------------------
+
+# Map env var -> (section, field). PKM_SIDECAR_CONFIG_PATH is handled
+# separately because it selects the TOML file rather than a config field.
+_ENV_MAP: dict[str, tuple[str, str]] = {
+    "PKM_SIDECAR_HOST": ("server", "host"),
+    "PKM_SIDECAR_PORT": ("server", "port"),
+    "PKM_SIDECAR_API_TOKEN": ("server", "api_token"),
+    "PKM_SIDECAR_DB_PATH": ("database", "path"),
+    "PKM_SIDECAR_LOG_LEVEL": ("logging", "level"),
+    "JOPLIN_BASE_URL": ("joplin", "base_url"),
+    "JOPLIN_TOKEN": ("joplin", "token"),
+    "JOPLIN_EVENT_POLL_SECONDS": ("joplin", "event_poll_seconds"),
+    "JOPLIN_PAGE_LIMIT": ("joplin", "page_limit"),
+}
+
+# Map CLI override key -> (section, field). Only flags the user actually set
+# are passed; None values are ignored. (PRD §15.1 lists host/port/config/db/
+# log-level; allow_non_localhost comes from the serve flag in PRD §7.3.)
+_CLI_MAP: dict[str, tuple[str, str]] = {
+    "host": ("server", "host"),
+    "port": ("server", "port"),
+    "db": ("database", "path"),
+    "log_level": ("logging", "level"),
+    "allow_non_localhost": ("server", "allow_non_localhost"),
+}
+
+# Fields where an empty string means "unset" (fall back to lower precedence /
+# default) rather than an error. PKM_SIDECAR_PORT="" is deliberately NOT here:
+# an empty port must surface as a validation error (PRD §7 decision).
+_EMPTY_AS_UNSET: set[tuple[str, str]] = {
+    ("server", "api_token"),
+    ("joplin", "token"),
+    ("joplin", "base_url"),
+    ("server", "host"),
+    ("database", "path"),
+    ("logging", "level"),
+}
+
+
+def _layer_env(layers: dict[str, dict[str, Any]], env: Mapping[str, str]) -> None:
+    for var, (section, field) in _ENV_MAP.items():
+        if var not in env:
+            continue
+        value = env[var]
+        if value == "" and (section, field) in _EMPTY_AS_UNSET:
+            continue
+        layers[section][field] = value
+
+
+def _layer_cli(layers: dict[str, dict[str, Any]], cli_overrides: Mapping[str, Any]) -> None:
+    for key, (section, field) in _CLI_MAP.items():
+        if key not in cli_overrides:
+            continue
+        value = cli_overrides[key]
+        if value is None:
+            continue
+        layers[section][field] = value
+
+
+def _load_toml(config_path: Path, *, explicit: bool) -> dict[str, Any]:
+    """Read a TOML config file into nested section dicts.
+
+    *explicit* is True when the user named the file (via --config or
+    PKM_SIDECAR_CONFIG_PATH): then a missing/unreadable/malformed file is a hard
+    error. When the default path is merely probed, a missing file is ignored.
+    """
+    try:
+        raw = config_path.read_bytes()
+    except FileNotFoundError:
+        if explicit:
+            raise ConfigError(f"Config file not found: {config_path}") from None
+        return {}
+    except OSError as exc:
+        raise ConfigError(f"Config file is unreadable: {config_path} ({exc})") from exc
+
+    try:
+        parsed = tomllib.loads(raw.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"Config file is not valid TOML: {config_path} ({exc})") from exc
+
+    sections: dict[str, Any] = {}
+    for section in ("server", "joplin", "database", "logging", "indexing"):
+        if section in parsed and isinstance(parsed[section], dict):
+            sections[section] = dict(parsed[section])
+    return sections
+
+
+def _ensure_directories(cfg: AppConfig) -> None:
+    cfg.database.path.parent.mkdir(parents=True, exist_ok=True)
+    if cfg.config_path is not None:
+        cfg.config_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+# --- entry point -----------------------------------------------------------
+
+
+def load_config(
+    *,
+    config_path: Path | None = None,
+    cli_overrides: Mapping[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> AppConfig:
+    """Build the immutable :class:`AppConfig` from all configuration sources.
+
+    Precedence, highest to lowest: ``cli_overrides`` > ``env`` > TOML > defaults.
+    ``env`` defaults to :data:`os.environ`. Keys in ``cli_overrides`` whose value
+    is ``None`` are treated as unset.
+    """
+    import os
+
+    env = os.environ if env is None else env
+    cli_overrides = {} if cli_overrides is None else cli_overrides
+
+    # Resolve which TOML file to read and whether the choice was explicit.
+    explicit_path = cli_overrides.get("config") or env.get("PKM_SIDECAR_CONFIG_PATH") or None
+    chosen_path = (
+        Path(explicit_path).expanduser() if explicit_path else DEFAULT_CONFIG_PATH.expanduser()
+    )
+    toml_sections = _load_toml(chosen_path, explicit=bool(explicit_path))
+
+    # Start from TOML, overlay env, overlay CLI.
+    layers: dict[str, dict[str, Any]] = {
+        "server": dict(toml_sections.get("server", {})),
+        "joplin": dict(toml_sections.get("joplin", {})),
+        "database": dict(toml_sections.get("database", {})),
+        "logging": dict(toml_sections.get("logging", {})),
+        "indexing": dict(toml_sections.get("indexing", {})),
+    }
+    _layer_env(layers, env)
+    _layer_cli(layers, cli_overrides)
+
+    try:
+        cfg = AppConfig(
+            server=ServerConfig(**layers["server"]),
+            joplin=JoplinConfig(**layers["joplin"]),
+            database=DatabaseConfig(**layers["database"]),
+            logging=LoggingConfig(**layers["logging"]),
+            indexing=IndexingConfig(**layers["indexing"]),
+            config_path=chosen_path if toml_sections else None,
+        )
+    except ValueError as exc:
+        # Pydantic ValidationError is a ValueError subclass.
+        raise ConfigError(f"Invalid configuration: {exc}") from exc
+
+    # Bind-address safety (PRD §7.3, §8.1).
+    if not is_loopback_host(cfg.server.host) and not cfg.server.allow_non_localhost:
+        raise ConfigError(
+            f"Refusing to bind to non-localhost host {cfg.server.host!r}. "
+            "Pass --allow-non-localhost to override."
+        )
+
+    _ensure_directories(cfg)
+
+    if cfg.joplin.token is None:
+        logger.warning("No Joplin token configured; indexing operations will be unavailable.")
+
+    return cfg
+
+
+def require_joplin_token(cfg: AppConfig) -> str:
+    """Return the Joplin token, or raise :class:`ConfigError` if it is missing.
+
+    Read/serve callers tolerate a missing token; indexing, sync, and doctor
+    callers invoke this so they fail clearly (PRD §7.3).
+    """
+    if cfg.joplin.token is None:
+        raise ConfigError("Joplin token is required for indexing operations.")
+    return cfg.joplin.token.get_secret_value()
