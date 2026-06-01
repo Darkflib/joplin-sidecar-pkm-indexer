@@ -19,6 +19,14 @@ call remains a GET). No schema change.
   time on hover), and a todo checkbox state; search results show a highlighted
   match snippet. Each column header shows its item count.
 
+### Fixed
+- Last-sync time showed "57y ago" — the index meta timestamps are epoch
+  *seconds* but the relative-time formatter expected milliseconds; the value is
+  now scaled and reads "never synced" when the index has never been built.
+- The token paste banner (and the search column) stayed visible even when not
+  needed: an id/class `display:` rule overrode the `hidden` attribute. Added a
+  `[hidden] { display: none !important }` reset.
+
 ### Changed
 - Nav bar now carries the index counts (notes/folders/tags/tasks), the search
   box, last-sync time, a **Sync** button, and the Joplin online/offline badge,
