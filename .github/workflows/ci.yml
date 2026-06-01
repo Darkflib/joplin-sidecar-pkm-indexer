@@ -30,15 +30,17 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev --python ${{ matrix.python-version }}
 
+      # --no-sync: reuse the env synced above. A bare `uv run` re-syncs to the
+      # default (no dev extra) and would strip ruff/pytest back out.
       - name: Ruff lint
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
 
       - name: Ruff format check
-        run: uv run ruff format --check .
+        run: uv run --no-sync ruff format --check .
 
       - name: Pytest
         run: >-
-          uv run pytest -m 'not manual'
+          uv run --no-sync pytest -m 'not manual'
           --cov=pkm_sidecar --cov-report=term-missing --cov-fail-under=70
 
   typecheck:
@@ -57,4 +59,4 @@ jobs:
         run: uv sync --extra dev
 
       - name: Mypy
-        run: uv run mypy src
+        run: uv run --no-sync mypy src
