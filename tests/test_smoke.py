@@ -26,7 +26,7 @@ RESERVED_MODULES = [
 
 
 def test_version_is_set() -> None:
-    assert pkm_sidecar.__version__ == "0.2.1"
+    assert pkm_sidecar.__version__ == "0.2.2"
 
 
 def test_reserved_modules_importable() -> None:

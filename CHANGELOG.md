@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] — 2026-05-31
+
+Dashboard polish only — still **read-only** (no mutation behaviour; every Joplin
+call remains a GET). No schema change.
+
+### Added
+- **"Needs review" column** on the dashboard, wired to the existing
+  `GET /api/notes/review` endpoint.
+- **System colour-scheme support** — the dashboard now follows
+  `prefers-color-scheme` with a full dark theme.
+- Each note row gains an **"open in Joplin"** link
+  (`joplin://x-callback-url/openNote?id=…`), a relative "updated" time (absolute
+  time on hover), and a todo checkbox state; search results show a highlighted
+  match snippet. Each column header shows its item count.
+
+### Changed
+- Nav bar now carries the index counts (notes/folders/tags/tasks), the search
+  box, last-sync time, a **Sync** button, and the Joplin online/offline badge,
+  freeing the body for content.
+- The note lists are now a horizontally scrolling strip of fixed-width cards,
+  each scrolling vertically on its own, so columns can be wider and carry more
+  detail.
+
 ## [0.2.1] — 2026-05-31
 
 ### Added
@@ -78,6 +101,7 @@ verified end-to-end against a live Joplin (~2200 notes indexed); see
 - Windows under the launcher is experimental (the `0600` token-file permission is
   a no-op there).
 
+[0.2.2]: https://github.com/darkflib/joplin-sidecar-pkm-indexer/releases/tag/v0.2.2
 [0.2.1]: https://github.com/darkflib/joplin-sidecar-pkm-indexer/releases/tag/v0.2.1
 [0.2.0]: https://github.com/darkflib/joplin-sidecar-pkm-indexer/releases/tag/v0.2.0
 [0.1.0]: https://github.com/darkflib/joplin-sidecar-pkm-indexer/releases/tag/v0.1.0
