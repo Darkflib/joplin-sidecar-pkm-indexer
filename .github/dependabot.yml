@@ -1,0 +1,26 @@
+version: 2
+updates:
+  # Keep the workflow action pins current; stale majors start emitting
+  # deprecation warnings and eventually stop running.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"
+
+  # uv.lock is the source of truth for what CI installs, so let Dependabot
+  # raise the bumps rather than letting the lock drift for months.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "deps"
+    groups:
+      dev-tooling:
+        patterns:
+          - pytest*
+          - ruff
+          - mypy
+          - pre-commit
