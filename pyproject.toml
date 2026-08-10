@@ -19,7 +19,7 @@ classifiers = [
 # The dev extra below is opt-in — a plain `pip install .` does not pull it in.
 dependencies = [
     "fastapi>=0.141",
-    "uvicorn[standard]>=0.52",
+    "uvicorn[standard]>=0.52.1",
     "pydantic>=2.13",
     "pydantic-settings>=2.15",
     "httpx>=0.28",

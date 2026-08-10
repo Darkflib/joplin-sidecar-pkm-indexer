@@ -691,7 +691,7 @@ requires-dist = [
     { name = "pytest-httpx", marker = "extra == 'dev'", specifier = ">=0.36" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.2" },
     { name = "typer", specifier = ">=0.27" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.52" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.1" },
 ]
 provides-extras = ["dev"]
 
