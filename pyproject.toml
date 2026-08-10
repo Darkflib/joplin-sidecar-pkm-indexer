@@ -14,8 +14,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Utilities",
 ]
-# Floors track the versions CI actually exercises (see uv.lock), so a
-# lock-less `pip install .` lands on something we have tested.
+# Floors bound what a lock-less install may resolve to, and track the versions
+# CI exercises; uv.lock pins the exact set that CI and `uv sync` actually use.
+# The dev extra below is opt-in — a plain `pip install .` does not pull it in.
 dependencies = [
     "fastapi>=0.141",
     "uvicorn[standard]>=0.52",

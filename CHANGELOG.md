@@ -23,8 +23,9 @@ Maintenance only — no runtime behaviour change, no schema change.
 ### Added
 - CI: `uv lock --check`, so a dependency bump can't merge without the matching
   lockfile; a `build` job that builds the sdist/wheel and asserts `schema.sql`,
-  `templates/` and `static/` are actually packaged; and an explicit read-only
-  `permissions` block.
+  `templates/` and `static/` are actually packaged in **both**; an explicit
+  read-only `permissions` block; and `persist-credentials: false` on every
+  checkout, since no job runs authenticated git commands.
 - `.github/dependabot.yml` — monthly GitHub Actions and uv dependency updates.
 
 ### Removed
