@@ -146,10 +146,15 @@ no MCP server, no multi-user or remote access.
 ## Development
 
 ```sh
+uv lock --check            # pyproject.toml and uv.lock agree
 uv run ruff check . && uv run ruff format --check .
 uv run mypy src
 uv run pytest -m 'not manual' --cov=pkm_sidecar --cov-report=term-missing --cov-fail-under=70
+uv build                   # sdist + wheel, incl. schema.sql/templates/static
 ```
+
+These are the same checks CI runs (`.github/workflows/ci.yml`), against Python
+3.12 and 3.13.
 
 See [tests/README.md](tests/README.md) for the PRD §18 acceptance-criteria map and
 [tests/manual/CHECKLIST.md](tests/manual/CHECKLIST.md) for the manual test pass.
