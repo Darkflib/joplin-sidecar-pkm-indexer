@@ -168,13 +168,23 @@ async function loadStatus() {
   document.getElementById("count-tags").textContent = db.tag_count;
   document.getElementById("count-tasks").textContent = db.task_count;
 
-  const last = s.indexing.last_incremental_index_at || s.indexing.last_full_index_at;
+  // Index meta timestamps are epoch *seconds* (note timestamps are ms); scale up.
+  // A full rebuild and an incremental sync write separate meta keys and neither
+  // updates the other, so a rebuild after some incrementals leaves the older
+  // incremental stamp in place. Take whichever actually ran most recently.
+  const stamps = [
+    s.indexing.last_incremental_index_at,
+    s.indexing.last_full_index_at,
+  ].filter((t) => typeof t === "number");
+  const lastSecs = stamps.length ? Math.max(...stamps) : null;
+  const lastMs = lastSecs ? lastSecs * 1000 : null;
   const lastSync = document.getElementById("last-sync");
-  if (last) {
-    lastSync.textContent = "synced " + timeAgo(last);
-    lastSync.title = fmtDate(last);
+  if (lastMs) {
+    lastSync.textContent = "synced " + timeAgo(lastMs);
+    lastSync.title = fmtDate(lastMs);
   } else {
-    lastSync.textContent = "";
+    lastSync.textContent = "never synced";
+    lastSync.title = "";
   }
 
   const badge = document.getElementById("status-badge");

@@ -21,13 +21,13 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # No job here runs authenticated git commands.
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
@@ -58,13 +58,13 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # No job here runs authenticated git commands.
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
@@ -82,13 +82,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # No job here runs authenticated git commands.
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 

@@ -52,5 +52,33 @@ def test_static_js_served_and_token_safe(client: TestClient) -> None:
     assert "test-api-token" not in js
 
 
+def test_last_sync_uses_newest_of_both_index_stamps(client: TestClient) -> None:
+    """A full rebuild after incrementals must not display the stale incremental time.
+
+    services.py writes META_LAST_FULL_INDEX_AT and META_LAST_INCREMENTAL_INDEX_AT
+    independently — neither updates the other — so picking the incremental stamp
+    whenever it is set shows the wrong time after a rebuild.
+
+    There is no JS runtime in CI, so this asserts the whole assignment chain
+    rather than a substring: both stamps must feed `stamps`, `lastSecs` must come
+    from `Math.max` over it, and `lastMs` must derive from `lastSecs`. That way
+    the test cannot pass while `lastMs` is still taken from one stamp directly.
+    """
+    js = client.get("/static/dashboard.js").text
+    compact = " ".join(js.split())
+
+    # Both stamps are candidates, not one preferred over the other.
+    assert (
+        "const stamps = [ s.indexing.last_incremental_index_at, "
+        "s.indexing.last_full_index_at, ]" in compact
+    )
+    # The newest of them wins, and the displayed value derives from that choice.
+    assert "const lastSecs = stamps.length ? Math.max(...stamps) : null;" in compact
+    assert "const lastMs = lastSecs ? lastSecs * 1000 : null;" in compact
+
+    # The old `a || b` form silently preferred the incremental stamp.
+    assert "s.indexing.last_incremental_index_at || s.indexing.last_full_index_at" not in compact
+
+
 def test_static_css_served(client: TestClient) -> None:
     assert client.get("/static/dashboard.css").status_code == 200

@@ -36,6 +36,10 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute must win over our flex/grid display rules below
+   (an id/class `display:` would otherwise override the UA [hidden] rule). */
+[hidden] { display: none !important; }
+
 /* Visually hidden but available to assistive technology. */
 .visually-hidden {
   position: absolute;
