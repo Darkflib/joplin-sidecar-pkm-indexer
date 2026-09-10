@@ -26,3 +26,7 @@ htmlcov/
 # Secrets / local config that may carry tokens
 .env
 /config.toml
+
+# OS cruft
+.DS_Store
+Thumbs.db

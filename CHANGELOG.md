@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Maintenance only — no runtime behaviour change, no schema change.
+
+### Changed
+- **Dependencies refreshed** (`uv lock --upgrade`): FastAPI 0.136→0.141,
+  Starlette 1.2→1.6, uvicorn 0.48→0.52, Typer 0.26→0.27,
+  pydantic-settings 2.14→2.15, plus dev tooling (ruff 0.15→0.16,
+  mypy 2.1→2.3, pytest 9.0→9.1, coverage, pre-commit). Declared version
+  floors in `pyproject.toml` now track the versions CI actually exercises.
+- **Pre-commit hooks bumped** — `ruff-pre-commit` v0.6.9→v0.16.2 (it was ten
+  minor versions behind the `ruff` used in CI, so local hooks and CI could
+  disagree about formatting) and `pre-commit-hooks` v5.0.0→v6.0.0.
+- **Mypy is now a blocking CI check** rather than `continue-on-error`. The tree
+  is clean under `--strict`, so there was nothing to grandfather in.
+
+### Added
+- CI: `uv lock --check`, so a dependency bump can't merge without the matching
+  lockfile; a `build` job that builds the sdist/wheel and asserts `schema.sql`,
+  `templates/` and `static/` are actually packaged in **both**; an explicit
+  read-only `permissions` block; and `persist-credentials: false` on every
+  checkout, since no job runs authenticated git commands.
+- `.github/dependabot.yml` — monthly GitHub Actions and uv dependency updates.
+
+### Removed
+- A stray `.DS_Store` committed at the repo root (now gitignored).
+
 ## [0.2.2] — 2026-05-31
 
 Dashboard polish only — still **read-only** (no mutation behaviour; every Joplin

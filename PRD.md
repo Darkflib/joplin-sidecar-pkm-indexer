@@ -176,7 +176,7 @@ Required:
 * Click or Typer.
 * pytest.
 * Ruff.
-* mypy optional but preferred.
+* mypy, strict mode — enforced in CI (the tree is clean, so keep it that way).
 * uv for dependency management.
 
 Suggested package structure:
