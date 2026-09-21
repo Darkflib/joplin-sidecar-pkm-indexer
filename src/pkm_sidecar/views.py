@@ -75,6 +75,7 @@ async def get_status(request: Request) -> StatusResponse:
         last_full = repo.get_meta(db.META_LAST_FULL_INDEX_AT)
         last_inc = repo.get_meta(db.META_LAST_INCREMENTAL_INDEX_AT)
         last_event = repo.get_meta(db.META_LAST_EVENT_ID)
+        incomplete = db.rebuild_in_progress_since(reader) is not None
     finally:
         reader.close()
 
@@ -101,6 +102,8 @@ async def get_status(request: Request) -> StatusResponse:
             last_full_index_at=_int_or_none(last_full),
             last_incremental_index_at=_int_or_none(last_inc),
             last_event_id=last_event,
+            index_incomplete=incomplete,
+            rebuild_in_progress=indexer.rebuild_in_progress,
         ),
         runtime=RuntimeStatus(launched_by=os.environ.get("JOPLIN_SIDECAR_LAUNCHED_BY")),
     )

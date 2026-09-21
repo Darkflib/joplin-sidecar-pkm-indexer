@@ -64,10 +64,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Only run the background loop when we can actually reach Joplin (token set)
     # and the caller asked for it (tests disable it).
     enable = app.state.start_indexer_loop and bool(cfg.joplin.token)
-    # First-run backfill: serve-only (launcher) startups otherwise stay empty
-    # because the loop only does incremental sync.
-    if enable and services.needs_initial_rebuild(cfg, writer):
-        log_event(logger, "index.full.started", reason="empty_index_backfill")
+    # Serve-only (launcher) startups run nothing but incremental sync, so they
+    # need a rebuild kicked off here both to backfill a fresh index and to finish
+    # one that a previous run left half-wiped.
+    reason = services.rebuild_reason(cfg, writer) if enable else None
+    if reason is not None:
+        if reason == "interrupted_rebuild":
+            logger.warning(
+                "A previous full rebuild did not finish, so tasks/links/tags are "
+                "incomplete; rebuilding now."
+            )
+        log_event(logger, "index.full.started", reason=reason)
         indexer.dispatch_rebuild()
     await indexer.start(enable_background=enable)
 

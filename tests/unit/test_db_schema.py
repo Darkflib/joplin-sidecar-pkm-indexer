@@ -235,8 +235,26 @@ class TestResetDerived:
             "VALUES ('n1', 1, 0, 't', '- [ ] t', 0)"
         )
         db.set_meta(conn, db.META_LAST_EVENT_ID, "cursor-123")
-        db.reset_derived(conn)
+        db.reset_derived(conn, started_at=1700000000)
         assert conn.execute("SELECT count(*) FROM notes").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM extracted_tasks").fetchone()[0] == 0
         assert db.get_meta(conn, db.META_LAST_EVENT_ID) is None
+        # The wipe and the "incomplete" flag land together, so the flag can never
+        # be missing while the derived tables are empty.
+        assert db.rebuild_in_progress_since(conn) == 1700000000
+        conn.close()
+
+    def test_clear_rebuild_in_progress_lowers_the_flag(self, db_path: Path) -> None:
+        conn = db.open_writer_connection(db_path)
+        db.reset_derived(conn, started_at=1700000000)
+        with db.transaction(conn):
+            db.clear_rebuild_in_progress(conn)
+        assert db.rebuild_in_progress_since(conn) is None
+        conn.close()
+
+    def test_corrupt_flag_still_reads_as_incomplete(self, db_path: Path) -> None:
+        conn = db.open_writer_connection(db_path)
+        db.set_meta(conn, db.META_REBUILD_IN_PROGRESS, "not-a-number")
+        assert db.rebuild_in_progress_since(conn) == 0  # falsy int, but not None
+        assert db.rebuild_in_progress_since(conn) is not None
         conn.close()

@@ -349,6 +349,7 @@ async def _run_doctor(cfg: AppConfig) -> list[DoctorResult]:
     conn = db.open_writer_connection(cfg.database.path)
     try:
         fts_ok = db.fts_available(conn)
+        interrupted_since = db.rebuild_in_progress_since(conn)
     finally:
         conn.close()
     results.append(
@@ -356,6 +357,20 @@ async def _run_doctor(cfg: AppConfig) -> list[DoctorResult]:
             "OK" if fts_ok else "FAIL", "fts5_available", "FTS5 build" if fts_ok else "no FTS5"
         )
     )
+
+    # An index left half-wiped by an interrupted rebuild still answers every
+    # query, just with partial tasks/links/tags, so say so plainly here.
+    if interrupted_since is None:
+        results.append(DoctorResult("OK", "index_complete", "derived tables intact"))
+    else:
+        results.append(
+            DoctorResult(
+                "FAIL",
+                "index_complete",
+                f"a full rebuild started at {interrupted_since} never finished; "
+                "tasks/links/tags are partial — run `pkm-sidecar index rebuild`",
+            )
+        )
 
     # Bind address local.
     if is_loopback_host(cfg.server.host) or cfg.server.allow_non_localhost:
