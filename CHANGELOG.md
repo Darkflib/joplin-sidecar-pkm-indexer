@@ -16,7 +16,13 @@ adheres to [Semantic Versioning](https://semver.org/).
   self-healed. A `joplin.rebuild_in_progress` flag is now raised in the same
   transaction as the wipe and lowered in the same one that stamps completion, so
   its presence means exactly "the derived tables are empty and not yet refilled".
-  `serve` checks it at startup and rebuilds. Recovery is deliberately not gated
+  `serve` checks it at startup and rebuilds, and the background loop keeps
+  retrying (30s doubling to 15min) for as long as the flag is up, so a recovery
+  that fails because Joplin is not up yet is not lost. While the flag is up the
+  loop does **not** fall through to incremental sync: that only applies events
+  from the cursor forward, and the cursor was cleared by the wipe, so it would
+  refresh "last synced" over an index still missing every task, link and tag.
+  Recovery is deliberately not gated
   on `rebuild_on_empty_start`: that option skips the cost of backfilling a fresh
   index, it is not an opt-in to serving a known-broken one.
 - The same flag covers a rebuild that *fails* partway (Joplin going away

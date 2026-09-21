@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from pkm_sidecar import db, logging_config, services
+from pkm_sidecar import indexer as indexer_mod
 from pkm_sidecar.config import AppConfig, load_config
 from pkm_sidecar.errors import JoplinError
 from pkm_sidecar.indexer import create_indexer
@@ -108,8 +109,14 @@ async def test_indexer_background_loop_starts_and_stops(
         await asyncio.sleep(0.05)  # let at least one tick run
         await handle.stop()
     assert handle._task is None
-    # at least one incremental sync ran
-    assert NoteRepository(writer).get_meta(db.META_LAST_INCREMENTAL_INDEX_AT) is not None
+    # This index has never been built, so the tick backfills rather than syncing:
+    # the loop is the safety net for an index that is empty or left broken, not
+    # only a driver of incremental sync. (In the app, app.py dispatches the same
+    # rebuild at startup and the _rebuild_in_progress guard stops it happening
+    # twice.) The incremental path on a healthy index is covered by
+    # TestRecoveryRetries::test_healthy_index_still_syncs_normally.
+    assert NoteRepository(writer).get_meta(db.META_LAST_FULL_INDEX_AT) is not None
+    assert {n.id for n in NoteRepository(writer).fetch_recent()} == {"n1"}
 
 
 async def test_test_mode_disables_background_loop(
@@ -303,3 +310,117 @@ class TestOutageLogging:
                     await services.incremental_sync_once(writer, client, cfg)
 
         assert sum("index.incremental.failed" in r.message for r in caplog.records) == 2
+
+
+class TestRecoveryRetries:
+    """Repairing a broken index is the loop's job until it succeeds.
+
+    A startup recovery rebuild that fails — Joplin not up yet when the launcher
+    spawns the sidecar is a plausible race — used to be one-shot. The loop then
+    ran incremental syncs for ever, and those can never refill the derived tables
+    because reset_derived cleared the cursor they read from.
+    """
+
+    @staticmethod
+    def _flaky_client(fake: FakeJoplin, down: dict[str, bool]) -> JoplinClient:
+        def handler(request: httpx.Request) -> httpx.Response:
+            # /events keeps answering so incremental ticks "succeed" — which is
+            # exactly why falling through to them hid the broken index.
+            if down["v"] and request.url.path != "/events":
+                return httpx.Response(500, json={"error": "not ready"})
+            return fake.handler(request)
+
+        return JoplinClient(
+            "http://127.0.0.1:41184",
+            "tok",
+            transport=httpx.MockTransport(handler),
+            max_retries=0,
+            backoff_initial=0.0,
+        )
+
+    @pytest.fixture
+    def fast_backoff(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(indexer_mod, "_RECOVERY_BACKOFF_BASE_SECONDS", 0.001, raising=False)
+        monkeypatch.setattr(indexer_mod, "_RECOVERY_BACKOFF_MAX_SECONDS", 0.005, raising=False)
+
+    @staticmethod
+    def _tight_loop_cfg(cfg: AppConfig) -> AppConfig:
+        return cfg.model_copy(
+            update={"joplin": cfg.joplin.model_copy(update={"event_poll_seconds": 0})}
+        )
+
+    async def test_loop_keeps_retrying_until_joplin_returns(
+        self, cfg: AppConfig, writer: sqlite3.Connection, fast_backoff: None
+    ) -> None:
+        fake = FakeJoplin()
+        fake.add_note("n1", "One", "- [ ] a task")
+        fake.add_tag("t1", "work", note_ids=("n1",))
+        down = {"v": True}
+        client = self._flaky_client(fake, down)
+
+        async with client:
+            with pytest.raises(JoplinError):  # the startup recovery attempt
+                await services.full_rebuild(writer, client, cfg)
+            assert db.rebuild_in_progress_since(writer) is not None
+
+            handle = indexer_mod.create_indexer(self._tight_loop_cfg(cfg), writer, client)
+            await handle.start(enable_background=True)
+            await asyncio.sleep(0.05)  # ticks pass while Joplin is still down
+            down["v"] = False  # Joplin comes back
+            await asyncio.sleep(0.1)
+            await handle.stop()
+
+        assert db.rebuild_in_progress_since(writer) is None  # repaired itself
+        repo = NoteRepository(writer)
+        assert [n.id for n in repo.fetch_todos()] == ["n1"]
+        assert [n.id for n in repo.fetch_untagged()] == []
+
+    async def test_incremental_is_skipped_while_the_index_is_broken(
+        self, cfg: AppConfig, writer: sqlite3.Connection, fast_backoff: None
+    ) -> None:
+        """Syncing a broken index just advances the cursor over the damage."""
+        fake = FakeJoplin()
+        fake.add_note("n1", "One", "body")
+        down = {"v": True}
+        client = self._flaky_client(fake, down)
+        async with client:
+            with pytest.raises(JoplinError):
+                await services.full_rebuild(writer, client, cfg)
+            handle = indexer_mod.create_indexer(self._tight_loop_cfg(cfg), writer, client)
+            await handle.start(enable_background=True)
+            await asyncio.sleep(0.05)
+            await handle.stop()
+        # No incremental run recorded its "last synced" stamp over the broken index.
+        assert NoteRepository(writer).get_meta(db.META_LAST_INCREMENTAL_INDEX_AT) is None
+
+    async def test_backoff_spaces_the_attempts_out(
+        self, cfg: AppConfig, writer: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rebuild is heavy; a Joplin that stays down must not get one per tick."""
+        monkeypatch.setattr(indexer_mod, "_RECOVERY_BACKOFF_BASE_SECONDS", 30.0, raising=False)
+        fake = FakeJoplin()
+        down = {"v": True}
+        client = self._flaky_client(fake, down)
+        async with client:
+            with pytest.raises(JoplinError):
+                await services.full_rebuild(writer, client, cfg)
+            handle = indexer_mod.create_indexer(self._tight_loop_cfg(cfg), writer, client)
+            await handle.start(enable_background=True)
+            await asyncio.sleep(0.05)  # many ticks at a zero poll interval
+            await handle.stop()
+        # One attempt, then a 30s backoff that none of those ticks outlasted.
+        assert handle._recovery_failures == 1
+
+    async def test_healthy_index_still_syncs_normally(
+        self, cfg: AppConfig, writer: sqlite3.Connection
+    ) -> None:
+        fake = FakeJoplin()
+        fake.add_note("n1", "One", "body")
+        async with fake.client() as client:
+            await services.full_rebuild(writer, client, cfg)
+            handle = indexer_mod.create_indexer(cfg, writer, client)
+            await handle.start(enable_background=True)
+            await asyncio.sleep(0.05)
+            await handle.stop()
+        assert handle._recovery_failures == 0
+        assert NoteRepository(writer).get_meta(db.META_LAST_INCREMENTAL_INDEX_AT) is not None
