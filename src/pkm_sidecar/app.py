@@ -33,6 +33,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     redact = [cfg.joplin.token.get_secret_value()] if cfg.joplin.token else []
     configure_logging(cfg.logging.level, redact_values=redact)
 
+    # Before minting anything: a bind outside loopback must carry a token the
+    # operator actually chose (PRD §8.1). The CLI checks this too, so it can exit
+    # 3 cleanly; this is the invariant for anyone embedding create_app directly.
+    security.assert_non_local_bind_has_token(cfg)
+
     resolved = security.resolve_api_token(cfg, logger)
     app.state.api_token = resolved.token
     app.state.api_token_source = resolved.source

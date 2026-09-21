@@ -67,14 +67,20 @@ def validate_bind_address(host: str, allow_non_localhost: bool) -> str:
     )
 
 
-def assert_non_local_bind_has_token(config: AppConfig, resolved: ResolvedToken) -> None:
+def assert_non_local_bind_has_token(config: AppConfig) -> None:
     """Refuse to expose a non-localhost bind protected only by an ephemeral token.
 
     Binding outside loopback means the API is reachable by other hosts; an
     auto-generated token the operator never saw is not adequate protection
     (PRD §8.1/§8.2).
+
+    Phrased against the *configuration* rather than a :class:`ResolvedToken` so
+    it can run before :func:`resolve_api_token` — the two are equivalent, since
+    that function mints an ephemeral token exactly when no token is configured,
+    and checking first means a refused bind never writes a token file it is
+    about to abandon.
     """
-    if not is_loopback_host(config.server.host) and resolved.source == "ephemeral":
+    if not is_loopback_host(config.server.host) and config.server.api_token is None:
         raise SecurityError(
             "Refusing to expose a non-localhost bind with an ephemeral API token. "
             "Set PKM_SIDECAR_API_TOKEN explicitly."

@@ -4,7 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from pkm_sidecar.app import create_app
-from pkm_sidecar.config import AppConfig
+from pkm_sidecar.config import AppConfig, load_config
+from pkm_sidecar.errors import SecurityError
+from pkm_sidecar.security import ephemeral_token_file_path
 
 AUTH = {"Authorization": "Bearer test-api-token"}
 
@@ -64,3 +66,46 @@ def test_openapi_exposes_no_mutating_methods(cfg: AppConfig) -> None:
     assert "PATCH" not in methods
     assert "DELETE" not in methods
     assert sorted(posts) == ["/api/index/note/{note_id}", "/api/index/rebuild", "/api/index/sync"]
+
+
+class TestNonLocalBindGuard:
+    """A bind outside loopback must carry a token the operator chose (PRD §8.1).
+
+    The README has always promised this; the check existed but was never called,
+    so `serve --host 0.0.0.0 --allow-non-localhost` with no PKM_SIDECAR_API_TOKEN
+    started happily behind an auto-generated token nobody had seen.
+    """
+
+    @staticmethod
+    def _non_local_cfg(tmp_path, monkeypatch, **extra: str) -> AppConfig:
+        monkeypatch.setenv("PKM_SIDECAR_RUNTIME_DIR", str(tmp_path / "rt"))
+        (tmp_path / "cfg").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "cfg" / "config.toml").write_text("")
+        return load_config(
+            env={
+                "PKM_SIDECAR_DB_PATH": str(tmp_path / "data" / "index.sqlite3"),
+                "PKM_SIDECAR_CONFIG_PATH": str(tmp_path / "cfg" / "config.toml"),
+                "PKM_SIDECAR_HOST": "0.0.0.0",
+                **extra,
+            },
+            cli_overrides={"allow_non_localhost": True},
+        )
+
+    def test_startup_refused_without_a_configured_token(self, tmp_path, monkeypatch) -> None:
+        cfg = self._non_local_cfg(tmp_path, monkeypatch)
+        with pytest.raises(SecurityError), TestClient(create_app(cfg, start_indexer_loop=False)):
+            pass  # pragma: no cover - lifespan raises before the body runs
+
+    def test_no_token_file_left_behind_by_a_refused_start(self, tmp_path, monkeypatch) -> None:
+        cfg = self._non_local_cfg(tmp_path, monkeypatch)
+        with pytest.raises(SecurityError), TestClient(create_app(cfg, start_indexer_loop=False)):
+            pass  # pragma: no cover
+        assert not ephemeral_token_file_path(cfg).exists()
+
+    def test_startup_allowed_with_a_configured_token(self, tmp_path, monkeypatch) -> None:
+        cfg = self._non_local_cfg(tmp_path, monkeypatch, PKM_SIDECAR_API_TOKEN="chosen")
+        with TestClient(create_app(cfg, start_indexer_loop=False)) as c:
+            assert c.get("/health").status_code == 200
+
+    def test_loopback_start_is_unaffected(self, client: TestClient) -> None:
+        assert client.get("/health").status_code == 200

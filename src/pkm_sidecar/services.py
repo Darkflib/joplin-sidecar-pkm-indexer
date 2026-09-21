@@ -29,7 +29,7 @@ from pkm_sidecar import db, markdown_extract
 from pkm_sidecar.config import AppConfig
 from pkm_sidecar.errors import JoplinCursorInvalidError, JoplinNotFoundError
 from pkm_sidecar.joplin_client import JoplinClient
-from pkm_sidecar.logging_config import get_logger, log_event
+from pkm_sidecar.logging_config import LogOnceGuard, get_logger, log_event
 from pkm_sidecar.repositories import NoteRepository
 
 logger = get_logger("indexer")
@@ -70,10 +70,23 @@ CHANGE_DELETE = 3
 
 MAX_EVENTS_PER_TICK = 1000
 
+# How many index_runs rows to keep. The table is an append-only audit trail that
+# nothing reads back, so without a cap a sidecar polling every 10s accumulates
+# rows for ever (~3.1M/year). Trimmed on every _finish_run.
+INDEX_RUN_RETENTION = 500
+
+# index.incremental.failed is emitted from the background loop's tick, so a
+# Joplin outage would otherwise log one ERROR line per poll interval for as long
+# as it lasts. Module-level (not per-run) so the suppression spans ticks; a
+# one-shot `pkm-sidecar index sync` gets a fresh guard with its own process and
+# so always logs its single failure.
+_FAILURE_LOG_GUARD = LogOnceGuard()
+
 
 @dataclass
 class IndexRunResult:
-    run_id: int
+    # None when the run was a no-op and left no index_runs row behind.
+    run_id: int | None
     mode: Literal["full", "incremental", "single_note"]
     status: Literal["success", "partial", "failed"]
     notes_seen: int = 0
@@ -130,7 +143,22 @@ def start_run_record(conn: sqlite3.Connection, mode: str) -> tuple[int, int]:
     return _start_run(conn, mode, started_at), started_at
 
 
+def _prune_runs(conn: sqlite3.Connection) -> None:
+    """Trim index_runs to the most recent :data:`INDEX_RUN_RETENTION` rows.
+
+    ``id`` is AUTOINCREMENT and therefore monotonic, so this is an indexed range
+    delete over the primary key that removes a single row per run once the table
+    is at its cap (and nothing at all while it is still filling).
+    """
+    conn.execute(
+        "DELETE FROM index_runs WHERE id <= (SELECT max(id) FROM index_runs) - ?",
+        (INDEX_RUN_RETENTION,),
+    )
+
+
 def _finish_run(conn: sqlite3.Connection, result: IndexRunResult) -> None:
+    if result.run_id is None:  # no-op run; nothing was recorded to finish
+        return
     conn.execute(
         "UPDATE index_runs SET completed_at=?, status=?, notes_seen=?, notes_updated=?, "
         "folders_seen=?, tags_seen=?, errors=?, message=? WHERE id=?",
@@ -146,6 +174,26 @@ def _finish_run(conn: sqlite3.Connection, result: IndexRunResult) -> None:
             result.run_id,
         ),
     )
+    _prune_runs(conn)
+
+
+def _record_failed_run(conn: sqlite3.Connection, result: IndexRunResult, started_at: int) -> None:
+    """Open and immediately close a row for a run that failed before it started.
+
+    Failures are the rows worth keeping, so they are recorded even though a
+    successful no-op tick is not; :func:`_prune_runs` keeps a sustained outage
+    from growing the table without bound.
+    """
+    result.run_id = _start_run(conn, result.mode, started_at)
+    _finish_run(conn, result)
+
+
+def _log_incremental_failure(run_id: int | None, exc: BaseException) -> None:
+    """Emit ``index.incremental.failed``, rate-limited per error type (PRD §17.2)."""
+    if not _FAILURE_LOG_GUARD.should_log(f"index.incremental.failed:{type(exc).__name__}"):
+        return
+    fields: dict[str, Any] = {} if run_id is None else {"run_id": run_id}
+    log_event(logger, "index.incremental.failed", level=40, error=type(exc).__name__, **fields)
 
 
 async def _chunked(
@@ -301,6 +349,19 @@ async def full_rebuild(
 # --- incremental sync ------------------------------------------------------
 
 
+def _advance_cursor(repo: NoteRepository, batch: dict[str, Any], started_at: int) -> None:
+    """Persist the new event cursor and the "last synced" stamp.
+
+    The stamp is written even for an idle tick: the dashboard's "synced N ago"
+    should track the poll, not the last time something actually changed. Caller
+    owns the transaction.
+    """
+    new_cursor = batch.get("cursor")
+    if new_cursor is not None:
+        repo.set_meta(db.META_LAST_EVENT_ID, str(new_cursor))
+    repo.set_meta(db.META_LAST_INCREMENTAL_INDEX_AT, str(started_at))
+
+
 async def _apply_note_event(
     conn: sqlite3.Connection, client: JoplinClient, note_id: str, change: int, indexed_at: int
 ) -> bool:
@@ -320,29 +381,53 @@ async def incremental_sync_once(
     Advances the cursor only after the whole batch is applied. On an invalid
     cursor the cursor meta is cleared and :class:`JoplinCursorInvalidError` is
     re-raised so the caller can demote to a full rebuild (PRD §17.4).
+
+    A tick that finds no events — the overwhelmingly common case on a 10s poll —
+    refreshes the "last synced" stamp and returns without opening an index_runs
+    row or emitting started/completed events, so an idle sidecar does not write
+    a row and two log lines every poll interval for the rest of its life.
     """
     started_at = _now()
     run_started = _marker()  # ns stamp for indexed_at
     repo = NoteRepository(conn)
     cursor = repo.get_meta(db.META_LAST_EVENT_ID)
+    result = IndexRunResult(run_id=None, mode="incremental", status="success")
+
+    # Fetched before any run row exists, so an idle (or failing) tick leaves
+    # nothing half-open behind.
+    try:
+        batch = await client.get_events(cursor=cursor, limit=MAX_EVENTS_PER_TICK)
+    except JoplinCursorInvalidError:
+        with repo.transaction():
+            conn.execute("DELETE FROM meta WHERE key = ?", (db.META_LAST_EVENT_ID,))
+        result.status = "failed"
+        result.message = "event cursor invalid"
+        _record_failed_run(conn, result, started_at)
+        raise
+    except Exception as exc:
+        result.status = "failed"
+        result.errors += 1
+        result.message = f"{type(exc).__name__}: {exc}"
+        _log_incremental_failure(result.run_id, exc)
+        _record_failed_run(conn, result, started_at)
+        raise
+
+    # Joplin answered, so any outage is over and the next failure is news again.
+    _FAILURE_LOG_GUARD.reset()
+
+    if not batch["items"]:
+        with repo.transaction():
+            _advance_cursor(repo, batch, started_at)
+        return result
+
     run_id = _start_run(conn, "incremental", started_at)
-    result = IndexRunResult(run_id=run_id, mode="incremental", status="success")
+    result.run_id = run_id
     log_event(logger, "index.incremental.started", run_id=run_id)
 
     needs_folder_refresh = False
     needs_tag_refresh = False
     needs_resource_refresh = False
     try:
-        try:
-            batch = await client.get_events(cursor=cursor, limit=MAX_EVENTS_PER_TICK)
-        except JoplinCursorInvalidError:
-            with repo.transaction():
-                conn.execute("DELETE FROM meta WHERE key = ?", (db.META_LAST_EVENT_ID,))
-            result.status = "failed"
-            result.message = "event cursor invalid"
-            _finish_run(conn, result)
-            raise
-
         for event in batch["items"]:
             item_type = event.get("item_type")
             change = event.get("type")
@@ -396,10 +481,7 @@ async def incremental_sync_once(
 
         # Advance cursor only after the full batch succeeded.
         with repo.transaction():
-            new_cursor = batch.get("cursor")
-            if new_cursor is not None:
-                repo.set_meta(db.META_LAST_EVENT_ID, str(new_cursor))
-            repo.set_meta(db.META_LAST_INCREMENTAL_INDEX_AT, str(started_at))
+            _advance_cursor(repo, batch, started_at)
 
         log_event(logger, "index.incremental.completed", run_id=run_id, notes=result.notes_seen)
     except JoplinCursorInvalidError:
@@ -408,9 +490,7 @@ async def incremental_sync_once(
         result.status = "failed"
         result.errors += 1
         result.message = f"{type(exc).__name__}: {exc}"
-        log_event(
-            logger, "index.incremental.failed", level=40, run_id=run_id, error=type(exc).__name__
-        )
+        _log_incremental_failure(run_id, exc)
         _finish_run(conn, result)
         raise
     _finish_run(conn, result)

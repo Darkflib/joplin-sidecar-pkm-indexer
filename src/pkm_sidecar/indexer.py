@@ -16,12 +16,16 @@ from pkm_sidecar import services
 from pkm_sidecar.config import AppConfig
 from pkm_sidecar.errors import IndexInProgressError, JoplinCursorInvalidError
 from pkm_sidecar.joplin_client import JoplinClient
-from pkm_sidecar.logging_config import get_logger, log_event
+from pkm_sidecar.logging_config import LogOnceGuard, get_logger, log_event
 from pkm_sidecar.services import IndexRunResult
 
 logger = get_logger("indexer")
 
 _STOP_DEADLINE_SECONDS = 3.0
+# How long to stay quiet after logging a failed tick. The loop retries every
+# ``event_poll_seconds`` (10s by default), so an overnight Joplin outage would
+# otherwise emit thousands of identical tracebacks (PRD §17.2).
+_TICK_FAILURE_COOLDOWN_SECONDS = 300.0
 
 
 class IndexerHandle:
@@ -38,6 +42,8 @@ class IndexerHandle:
         self._rebuild_in_progress = False
         self._last_result: IndexRunResult | None = None
         self._last_error: str | None = None
+        self._tick_failure_guard = LogOnceGuard()
+        self._consecutive_tick_failures = 0
 
     # --- introspection -----------------------------------------------------
 
@@ -147,14 +153,41 @@ class IndexerHandle:
         for task in list(self._tasks):
             task.cancel()
 
+    def _log_tick_failure(self, exc: Exception) -> None:
+        """Log a failed tick with its traceback, at most once per cooldown.
+
+        The first failure is logged in full; subsequent ones stay quiet until the
+        cooldown expires and then report how many ticks have failed in a row, so
+        a sustained outage is still visible without flooding the log. Either way
+        ``/api/status`` keeps reporting ``last_error`` throughout.
+        """
+        self._consecutive_tick_failures += 1
+        if not self._tick_failure_guard.should_log(
+            f"index.tick_failed:{type(exc).__name__}",
+            cooldown_seconds=_TICK_FAILURE_COOLDOWN_SECONDS,
+        ):
+            return
+        if self._consecutive_tick_failures == 1:
+            logger.error("Incremental sync tick failed", exc_info=exc)
+        else:
+            logger.error(
+                "Incremental sync tick still failing (%d consecutive): %s",
+                self._consecutive_tick_failures,
+                type(exc).__name__,
+            )
+
     async def _run_loop(self) -> None:
         log_event(logger, "service.start", component="indexer")
         while not self._stop.is_set():
             try:
                 await self.run_incremental_once()
+                # Recovered: let the next failure log immediately rather than
+                # being swallowed by a cooldown left over from an earlier outage.
+                self._consecutive_tick_failures = 0
+                self._tick_failure_guard.reset()
             except Exception as exc:
                 self._last_error = f"{type(exc).__name__}: {exc}"
-                logger.exception("Incremental sync tick failed")
+                self._log_tick_failure(exc)
             # interval elapsed (TimeoutError) -> run the next tick; stop_event -> exit
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(

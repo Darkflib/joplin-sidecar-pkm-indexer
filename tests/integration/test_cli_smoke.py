@@ -7,6 +7,7 @@ would hit Joplin are tested via their config-error/exit-code paths.
 from pathlib import Path
 
 import pytest
+import uvicorn
 from typer.testing import CliRunner
 
 from pkm_sidecar import __version__, logging_config
@@ -95,3 +96,37 @@ def test_open_uses_browser_and_hides_token(tmp_path: Path, monkeypatch: pytest.M
     assert result.exit_code == 0
     assert "#token=my-secret-token" in opened["url"]  # handed off via fragment
     assert "my-secret-token" not in result.stdout  # never printed
+
+
+@pytest.fixture
+def never_serves(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make a regressed bind guard fail loudly rather than bind a real port.
+
+    Without this, a `serve` that wrongly gets past its guard starts uvicorn for
+    real and the test hangs until CI times out.
+    """
+
+    async def _boom(self: uvicorn.Server, sockets: object = None) -> None:
+        raise AssertionError("uvicorn.Server.serve() was reached — the bind guard did not fire")
+
+    monkeypatch.setattr(uvicorn.Server, "serve", _boom)
+
+
+def test_serve_refuses_non_local_bind_without_override(tmp_path: Path, never_serves: None) -> None:
+    env = _env(tmp_path, PKM_SIDECAR_API_TOKEN="chosen")
+    result = runner.invoke(app, ["serve", "--host", "0.0.0.0"], env=env)
+    assert result.exit_code == 3
+    assert "--allow-non-localhost" in result.stderr
+
+
+def test_serve_refuses_non_local_bind_on_an_ephemeral_token(
+    tmp_path: Path, never_serves: None
+) -> None:
+    """Exit 3 rather than exposing the API behind a token nobody has seen."""
+    result = runner.invoke(
+        app, ["serve", "--host", "0.0.0.0", "--allow-non-localhost"], env=_env(tmp_path)
+    )
+    assert result.exit_code == 3
+    assert "PKM_SIDECAR_API_TOKEN" in result.stderr
+    # Refused before resolve_api_token could mint and write one.
+    assert not list((tmp_path / "rt").glob("*.token"))

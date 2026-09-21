@@ -99,9 +99,10 @@ uv run pkm-sidecar status --json # the /api/status payload (token never printed)
 uv run pkm-sidecar db path       # absolute SQLite path
 ```
 
-Exit codes: `0` ok · `1` runtime failure · `2` config error · `3` non-localhost
-bind without `--allow-non-localhost` · `4` indexing finished with errors ·
-`5` event cursor invalid (run a rebuild) · `130` interrupted.
+Exit codes: `0` ok · `1` runtime failure · `2` config error · `3` unsafe
+non-localhost bind (missing `--allow-non-localhost`, or no configured API token)
+· `4` indexing finished with errors · `5` event cursor invalid (run a rebuild) ·
+`130` interrupted.
 
 > **Tip:** the `inbox` view matches folders named in `[indexing].inbox_folder_names`
 > (default `Inbox`, `00 Inbox`, `_Inbox`). If it comes back empty, set this to your
@@ -117,7 +118,9 @@ settings and how to supply tokens (the launcher has no env-var UI).
 ## Security model
 
 - **Localhost only.** Binds `127.0.0.1` by default; a non-local bind needs
-  `--allow-non-localhost` and refuses to start on an ephemeral token.
+  `--allow-non-localhost` and refuses to start on an ephemeral token. Both checks
+  run before anything is minted — `serve` exits 3, and `create_app`'s startup
+  raises, so an embedder cannot skip past them either.
 - **Bearer auth** on every `/api/*` route (constant-time compare). `/health`,
   `/`, and `/static/*` are public.
 - **No mutation.** The Joplin client exposes only GET methods (enforced by an AST

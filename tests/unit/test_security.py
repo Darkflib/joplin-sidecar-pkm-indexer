@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from pkm_sidecar import logging_config, security
-from pkm_sidecar.config import load_config
+from pkm_sidecar.config import AppConfig, load_config
 from pkm_sidecar.errors import AuthError, SecurityError
 from pkm_sidecar.security import (
     LocalOnlyTransport,
@@ -113,24 +113,49 @@ class TestResolveApiToken:
             resolved = resolve_api_token(cfg, LOG)
         assert resolved.token not in caplog.text
 
-    def test_non_local_bind_with_ephemeral_token_refused(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def _non_local_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **extra: str
+    ) -> AppConfig:
         # config rejects non-local without override, so supply the override via the CLI layer.
         monkeypatch.setenv("PKM_SIDECAR_RUNTIME_DIR", str(tmp_path / "runtime"))
         (tmp_path / "cfg").mkdir(parents=True, exist_ok=True)
         (tmp_path / "cfg" / "config.toml").write_text("")
-        cfg = load_config(
+        return load_config(
             env={
                 "PKM_SIDECAR_DB_PATH": str(tmp_path / "data" / "index.sqlite3"),
                 "PKM_SIDECAR_CONFIG_PATH": str(tmp_path / "cfg" / "config.toml"),
                 "PKM_SIDECAR_HOST": "0.0.0.0",
+                **extra,
             },
             cli_overrides={"allow_non_localhost": True},
         )
-        resolved = resolve_api_token(cfg, LOG)
+
+    def test_non_local_bind_with_ephemeral_token_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = self._non_local_config(tmp_path, monkeypatch)
         with pytest.raises(SecurityError):
-            assert_non_local_bind_has_token(cfg, resolved)
+            assert_non_local_bind_has_token(cfg)
+
+    def test_non_local_bind_refused_before_a_token_file_is_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal must land before resolve_api_token mints and writes one."""
+        cfg = self._non_local_config(tmp_path, monkeypatch)
+        with pytest.raises(SecurityError):
+            assert_non_local_bind_has_token(cfg)
+        assert not ephemeral_token_file_path(cfg).exists()
+
+    def test_non_local_bind_with_configured_token_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = self._non_local_config(tmp_path, monkeypatch, PKM_SIDECAR_API_TOKEN="chosen")
+        assert_non_local_bind_has_token(cfg)  # no raise
+
+    def test_loopback_bind_with_ephemeral_token_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert_non_local_bind_has_token(_config(tmp_path, monkeypatch))  # no raise
 
 
 class TestBearerAuth:
