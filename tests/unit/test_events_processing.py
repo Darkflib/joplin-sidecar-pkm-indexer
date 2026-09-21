@@ -1,14 +1,18 @@
 """Unit tests for event dispatch and the indexer lifecycle (PRD §11.2)."""
 
 import asyncio
+import logging
 import sqlite3
 from pathlib import Path
 
+import httpx
 import pytest
 
 from pkm_sidecar import db, logging_config, services
 from pkm_sidecar.config import AppConfig, load_config
+from pkm_sidecar.errors import JoplinError
 from pkm_sidecar.indexer import create_indexer
+from pkm_sidecar.joplin_client import JoplinClient
 from pkm_sidecar.repositories import NoteRepository
 from pkm_sidecar.services import ITEM_TYPE_FOLDER, ITEM_TYPE_NOTE, ITEM_TYPE_TAG
 from tests._fake_joplin import FakeJoplin
@@ -117,3 +121,185 @@ async def test_test_mode_disables_background_loop(
         await handle.start(enable_background=False)
         assert handle._task is None
         await handle.stop()
+
+
+class TestOutageLogging:
+    """A Joplin outage must not flood the log (PRD §17.2).
+
+    The loop retries every ``event_poll_seconds``, so before this was rate-limited
+    an overnight outage emitted a full traceback — plus an ERROR event line — per
+    tick, thousands of times over.
+    """
+
+    @staticmethod
+    def _tick_failures(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.message.startswith("Incremental sync tick")]
+
+    async def _run_broken_loop(
+        self, cfg: AppConfig, writer: sqlite3.Connection, ticks: int
+    ) -> None:
+        fake = FakeJoplin(events_status=500)  # every /events call fails
+        async with fake.client() as client:
+            handle = create_indexer(cfg, writer, client)
+            for _ in range(ticks):
+                try:
+                    await handle.run_incremental_once()
+                except Exception as exc:  # mirrors the loop's own handler
+                    handle._log_tick_failure(exc)
+
+    async def test_repeated_failures_log_once(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG):
+            await self._run_broken_loop(cfg, writer, ticks=25)
+
+        failures = self._tick_failures(caplog)
+        assert len(failures) == 1  # not 25
+        assert failures[0].exc_info is not None  # the one we keep carries the traceback
+        # The per-tick `index.incremental.failed` event is rate-limited too.
+        assert sum("index.incremental.failed" in r.message for r in caplog.records) == 1
+
+    async def test_status_still_reports_the_error_while_quiet(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Suppressing the log must not suppress the signal /api/status reads."""
+        fake = FakeJoplin(events_status=500)
+        async with fake.client() as client:
+            handle = create_indexer(cfg, writer, client)
+            for _ in range(5):
+                try:
+                    await handle.run_incremental_once()
+                except Exception as exc:
+                    handle._last_error = f"{type(exc).__name__}: {exc}"
+                    handle._log_tick_failure(exc)
+            assert handle.last_error is not None
+            assert handle._consecutive_tick_failures == 5
+
+    async def test_cooldown_expiry_reports_the_backlog(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake = FakeJoplin(events_status=500)
+        async with fake.client() as client:
+            handle = create_indexer(cfg, writer, client)
+            with caplog.at_level(logging.DEBUG):
+                for tick in range(12):
+                    if tick == 8:
+                        handle._tick_failure_guard.reset()  # simulate the cooldown expiring
+                    try:
+                        await handle.run_incremental_once()
+                    except Exception as exc:
+                        handle._log_tick_failure(exc)
+
+        messages = [r.message for r in self._tick_failures(caplog)]
+        assert len(messages) == 2
+        assert "still failing (9 consecutive)" in messages[1]
+
+    async def test_recovery_lets_the_next_outage_log_immediately(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        fake = FakeJoplin()
+        fake.add_note("n1", "T", "b")
+        async with fake.client() as client:
+            handle = create_indexer(cfg, writer, client)
+            with caplog.at_level(logging.DEBUG):
+                fake.events_status = 500
+                for _ in range(3):
+                    try:
+                        await handle.run_incremental_once()
+                    except Exception as exc:
+                        handle._log_tick_failure(exc)
+
+                fake.events_status = 200  # Joplin comes back
+                await handle.run_incremental_once()
+                handle._consecutive_tick_failures = 0
+                handle._tick_failure_guard.reset()
+
+                fake.events_status = 500  # and goes away again
+                try:
+                    await handle.run_incremental_once()
+                except Exception as exc:
+                    handle._log_tick_failure(exc)
+
+        # One for the first outage, one for the second — the recovery in between
+        # clears the cooldown so the new outage is not swallowed.
+        assert len(self._tick_failures(caplog)) == 2
+
+    async def test_the_background_loop_itself_is_rate_limited(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """End-to-end through _run_loop, not just the helper it calls."""
+        # A zero poll interval turns the loop over as fast as the event loop allows.
+        fast = cfg.model_copy(
+            update={"joplin": cfg.joplin.model_copy(update={"event_poll_seconds": 0})}
+        )
+        fake = FakeJoplin(events_status=500)
+        async with fake.client() as client:
+            handle = create_indexer(fast, writer, client)
+            with caplog.at_level(logging.DEBUG):
+                await handle.start(enable_background=True)
+                await asyncio.sleep(0.2)
+                await handle.stop()
+
+        assert handle._consecutive_tick_failures > 5  # plenty of ticks failed
+        assert len(self._tick_failures(caplog)) == 1  # one line in the log
+        assert handle.last_error is not None  # still visible to /api/status
+
+    async def test_failing_batch_processing_is_rate_limited_too(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """/events answering is not recovery — the tick has to finish.
+
+        When `/events` succeeds but applying the batch fails, the cursor does not
+        advance, so every tick refetches the same batch. Resetting the guard as
+        soon as `/events` answered meant each of those ticks logged afresh, one
+        `index.incremental.failed` line per poll for as long as it lasted.
+        """
+        fake = FakeJoplin()
+        fake.add_note("n1", "T", "b")
+        fake.push_event(ITEM_TYPE_NOTE, "n1", 2)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # /events keeps working; fetching the note it points at does not.
+            if request.url.path.startswith("/notes/"):
+                return httpx.Response(500, json={"error": "boom"})
+            return fake.handler(request)
+
+        client = JoplinClient(
+            "http://127.0.0.1:41184",
+            "tok",
+            transport=httpx.MockTransport(handler),
+            max_retries=0,
+            backoff_initial=0.0,
+        )
+        async with client:
+            with caplog.at_level(logging.DEBUG):
+                for _ in range(15):
+                    with pytest.raises(JoplinError):
+                        await services.incremental_sync_once(writer, client, cfg)
+
+        assert sum("index.incremental.failed" in r.message for r in caplog.records) == 1
+        # The batch really was retried every tick (the cursor never advanced).
+        assert NoteRepository(writer).get_meta(db.META_LAST_EVENT_ID) is None
+
+    async def test_a_completed_tick_still_counts_as_recovery(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Narrowing the reset must not stop a real recovery from clearing it."""
+        fake = FakeJoplin(events_status=500)
+        fake.add_note("n1", "T", "b")
+        async with fake.client() as client:
+            with caplog.at_level(logging.DEBUG):
+                with pytest.raises(JoplinError):
+                    await services.incremental_sync_once(writer, client, cfg)
+
+                fake.events_status = 200  # Joplin comes back; this tick completes
+                fake.push_event(ITEM_TYPE_NOTE, "n1", 2)
+                assert (await services.incremental_sync_once(writer, client, cfg)).status == (
+                    "success"
+                )
+
+                fake.events_status = 500  # and fails again
+                with pytest.raises(JoplinError):
+                    await services.incremental_sync_once(writer, client, cfg)
+
+        assert sum("index.incremental.failed" in r.message for r in caplog.records) == 2

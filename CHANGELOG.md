@@ -6,9 +6,48 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Maintenance only — no runtime behaviour change, no schema change.
+No schema change. Fixes three defects that only show up over a long unattended
+run — the sidecar's actual deployment mode — plus the dependency/CI maintenance
+below.
+
+### Fixed
+- **`index_runs` no longer grows without bound.** Every incremental tick opened a
+  row whether or not anything had changed, so an idle sidecar polling every 10s
+  wrote ~8,640 rows a day (~3.1M a year) to a table nothing reads back and
+  nothing pruned. A tick that finds no events now refreshes the "last synced"
+  stamp and returns without opening a row or emitting start/complete events; runs
+  that do work — and failures, which are the rows worth keeping — are still
+  recorded, and `index_runs` is trimmed to the most recent 500.
+- **A Joplin outage no longer floods the log.** The background loop logged a full
+  traceback *and* an `index.incremental.failed` ERROR line on every tick, so an
+  overnight outage produced thousands of each. Both are now rate-limited to one
+  per error type per five minutes; the first failure is logged in full and, if it
+  persists, the next line reports how many ticks have failed in a row. Only a
+  tick that runs end to end counts as recovery and clears the cooldown — `/events`
+  merely answering is not enough, because when it is the *processing* of a batch
+  that keeps failing the cursor never advances, so the next tick refetches the
+  same batch and would otherwise log afresh every poll. `/api/status` keeps
+  reporting `last_error` throughout, and a one-shot `index sync` still logs its
+  single failure. This is what `docs/launcher.md` already claimed about log
+  hygiene under the launcher's "Copy diag".
+- **The non-localhost bind guard is actually wired up.** `serve --host 0.0.0.0
+  --allow-non-localhost` with no `PKM_SIDECAR_API_TOKEN` started happily behind
+  an auto-generated token the operator had never seen: the check existed and was
+  unit-tested, but nothing in `app.py` or `cli.py` ever called it — so the
+  README's security-model promise was not enforced. Now checked in both `serve`
+  (exit 3) and the app lifespan, and before `resolve_api_token` runs, so a
+  refused bind never writes a token file it is about to abandon. The lifespan
+  also re-runs `validate_bind_address`, which previously lived only in the CLI —
+  an embedder calling `create_app` directly could bind a non-loopback host
+  without ever setting `allow_non_localhost`.
 
 ### Changed
+- `assert_non_local_bind_has_token` now takes the `AppConfig` alone rather than
+  an `AppConfig` and a `ResolvedToken`, so it can run before a token is minted.
+  The two forms are equivalent — an ephemeral token is minted exactly when none
+  is configured.
+- Exit code 3 now covers both unsafe non-localhost binds (no override, or no
+  configured API token); README and the CLI epilogue say so.
 - **Dependencies refreshed** (`uv lock --upgrade`): FastAPI 0.136→0.141,
   Starlette 1.2→1.6, uvicorn 0.48→0.52, Typer 0.26→0.27,
   pydantic-settings 2.14→2.15, plus dev tooling (ruff 0.15→0.16,
@@ -27,6 +66,14 @@ Maintenance only — no runtime behaviour change, no schema change.
   read-only `permissions` block; and `persist-credentials: false` on every
   checkout, since no job runs authenticated git commands.
 - `.github/dependabot.yml` — monthly GitHub Actions and uv dependency updates.
+- 21 regression tests covering the three fixes above (313 total, 91% coverage).
+  The suite previously only ever ran short scenarios, which is why none of these
+  defects showed up — the new tests assert what happens on the *n*th tick, during
+  a sustained outage, and on a refused start.
+- An autouse fixture in `tests/conftest.py` resetting the process-global failure
+  log guard around every test. It deliberately spans ticks, so it also spanned
+  tests: without the reset, the first test to log a given error type silenced
+  every later one and log-volume assertions passed or failed on test ordering.
 
 ### Removed
 - A stray `.DS_Store` committed at the repo root (now gitignored).

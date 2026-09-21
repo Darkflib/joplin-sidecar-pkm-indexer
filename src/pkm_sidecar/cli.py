@@ -4,9 +4,9 @@ Commands: ``serve``, ``status``, ``doctor``, ``open``, ``index rebuild``,
 ``index sync``, ``db path``. Every command configures logging first, then loads
 config (CLI > env > TOML > defaults), then runs security checks before work.
 
-Exit codes: 0 ok · 1 runtime/operational failure · 2 config/usage error ·
-3 non-localhost bind without --allow-non-localhost · 4 indexing finished with
-errors · 5 event cursor invalid · 130 interrupted.
+Exit codes: 0 ok · 1 runtime/operational failure · 2 config/usage error · 3 unsafe
+non-localhost bind (missing --allow-non-localhost, or no configured API token) ·
+4 indexing finished with errors · 5 event cursor invalid · 130 interrupted.
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ from pkm_sidecar.repositories import NoteRepository
 logger = get_logger("cli")
 
 _EPILOG = (
-    "Exit codes: 0 ok · 1 runtime failure · 2 config error · 3 non-localhost bind "
-    "without --allow-non-localhost · 4 indexing errors · 5 cursor invalid · 130 interrupted."
+    "Exit codes: 0 ok · 1 runtime failure · 2 config error · 3 unsafe non-localhost "
+    "bind · 4 indexing errors · 5 cursor invalid · 130 interrupted."
 )
 
 app = typer.Typer(
@@ -146,6 +146,9 @@ def serve(
     )
     try:
         security.validate_bind_address(cfg.server.host, cfg.server.allow_non_localhost)
+        # An overridden bind is still refused when the only thing guarding it
+        # would be an auto-generated token the operator never saw.
+        security.assert_non_local_bind_has_token(cfg)
     except SecurityError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(3) from exc

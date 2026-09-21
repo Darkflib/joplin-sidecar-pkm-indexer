@@ -44,7 +44,7 @@ Environment variables:
 |---|---|---|
 | `PKM_SIDECAR_HOST` | `127.0.0.1` | bind host (localhost only unless `--allow-non-localhost`) |
 | `PKM_SIDECAR_PORT` | `8765` | bind port |
-| `PKM_SIDECAR_API_TOKEN` | _(ephemeral)_ | bearer token for `/api/*`; if unset, one is generated |
+| `PKM_SIDECAR_API_TOKEN` | _(ephemeral on loopback)_ | bearer token for `/api/*`; generated if unset, but a non-localhost bind requires an explicit one |
 | `PKM_SIDECAR_DB_PATH` | `~/.local/share/pkm-sidecar/index.sqlite3` | SQLite index path |
 | `PKM_SIDECAR_CONFIG_PATH` | `~/.config/pkm-sidecar/config.toml` | optional TOML config |
 | `PKM_SIDECAR_LOG_LEVEL` | `INFO` | log level |
@@ -88,6 +88,11 @@ a per-user runtime file, and logs that file's *path* (never the value) once. The
 dashboard receives the token via a URL fragment from `pkm-sidecar open` (or the
 launcher) — never embedded in HTML.
 
+A non-localhost bind is the exception: there the ephemeral fallback does **not**
+apply, and `serve` exits 3 before minting anything. A token the operator never
+saw is not adequate protection for an API other hosts can reach, so set
+`PKM_SIDECAR_API_TOKEN` explicitly for that case.
+
 ## Running
 
 ```sh
@@ -99,9 +104,10 @@ uv run pkm-sidecar status --json # the /api/status payload (token never printed)
 uv run pkm-sidecar db path       # absolute SQLite path
 ```
 
-Exit codes: `0` ok · `1` runtime failure · `2` config error · `3` non-localhost
-bind without `--allow-non-localhost` · `4` indexing finished with errors ·
-`5` event cursor invalid (run a rebuild) · `130` interrupted.
+Exit codes: `0` ok · `1` runtime failure · `2` config error · `3` unsafe
+non-localhost bind (missing `--allow-non-localhost`, or no configured API token)
+· `4` indexing finished with errors · `5` event cursor invalid (run a rebuild) ·
+`130` interrupted.
 
 > **Tip:** the `inbox` view matches folders named in `[indexing].inbox_folder_names`
 > (default `Inbox`, `00 Inbox`, `_Inbox`). If it comes back empty, set this to your
@@ -117,7 +123,9 @@ settings and how to supply tokens (the launcher has no env-var UI).
 ## Security model
 
 - **Localhost only.** Binds `127.0.0.1` by default; a non-local bind needs
-  `--allow-non-localhost` and refuses to start on an ephemeral token.
+  `--allow-non-localhost` and refuses to start on an ephemeral token. Both checks
+  run before anything is minted — `serve` exits 3, and `create_app`'s startup
+  raises, so an embedder cannot skip past them either.
 - **Bearer auth** on every `/api/*` route (constant-time compare). `/health`,
   `/`, and `/static/*` are public.
 - **No mutation.** The Joplin client exposes only GET methods (enforced by an AST

@@ -2,8 +2,11 @@
 
 import sqlite3
 
+import pytest
+
 from pkm_sidecar import db, services
 from pkm_sidecar.config import AppConfig
+from pkm_sidecar.errors import JoplinError
 from pkm_sidecar.indexer import create_indexer
 from pkm_sidecar.repositories import NoteRepository
 from pkm_sidecar.services import ITEM_TYPE_NOTE
@@ -89,3 +92,84 @@ async def test_incremental_issues_only_get_requests(
         fake.push_event(ITEM_TYPE_NOTE, "n1", 2)
         await services.incremental_sync_once(writer, client, cfg)
     assert fake.only_get_requests()
+
+
+async def test_idle_ticks_write_no_index_run_rows(
+    cfg: AppConfig, writer: sqlite3.Connection
+) -> None:
+    """A tick with no events must not leave an index_runs row behind.
+
+    At the default 10s poll an idle sidecar ticks ~8,640 times a day; recording
+    each one grew the table without bound (nothing ever reads or prunes it).
+    """
+    fake = FakeJoplin()
+    fake.add_note("n1", "Title", "body")
+    repo = NoteRepository(writer)
+
+    async with fake.client() as client:
+        await services.full_rebuild(writer, client, cfg)
+        rows_after_rebuild = writer.execute("SELECT count(*) FROM index_runs").fetchone()[0]
+
+        for _ in range(10):  # ten consecutive ticks with nothing to do
+            result = await services.incremental_sync_once(writer, client, cfg)
+            assert result.status == "success"
+            assert result.run_id is None  # no row was opened
+
+    assert writer.execute("SELECT count(*) FROM index_runs").fetchone()[0] == rows_after_rebuild
+    # …but the dashboard's "synced N ago" still tracks the poll.
+    assert repo.get_meta(db.META_LAST_INCREMENTAL_INDEX_AT) is not None
+
+
+async def test_tick_with_work_still_records_a_run(
+    cfg: AppConfig, writer: sqlite3.Connection
+) -> None:
+    fake = FakeJoplin()
+    fake.add_note("n1", "Title", "body")
+
+    async with fake.client() as client:
+        await services.full_rebuild(writer, client, cfg)
+        before = writer.execute("SELECT count(*) FROM index_runs").fetchone()[0]
+        fake.notes["n1"]["body"] = "changed"
+        fake.push_event(ITEM_TYPE_NOTE, "n1", 2)
+        result = await services.incremental_sync_once(writer, client, cfg)
+
+    assert result.run_id is not None
+    assert writer.execute("SELECT count(*) FROM index_runs").fetchone()[0] == before + 1
+    row = writer.execute(
+        "SELECT mode, status, notes_seen, completed_at FROM index_runs WHERE id = ?",
+        (result.run_id,),
+    ).fetchone()
+    assert (row["mode"], row["status"], row["notes_seen"]) == ("incremental", "success", 1)
+    assert row["completed_at"] is not None
+
+
+async def test_failed_tick_is_recorded_but_bounded(
+    cfg: AppConfig, writer: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failures are worth keeping, so they are recorded — but retention caps them."""
+    monkeypatch.setattr(services, "INDEX_RUN_RETENTION", 5)
+    fake = FakeJoplin(events_status=500)  # /events is broken for every tick
+
+    async with fake.client() as client:
+        for _ in range(20):
+            with pytest.raises(JoplinError):
+                await services.incremental_sync_once(writer, client, cfg)
+
+    rows = writer.execute("SELECT count(*) FROM index_runs").fetchone()[0]
+    assert rows == 5  # capped, not 20
+    assert (
+        writer.execute("SELECT count(*) FROM index_runs WHERE status = 'failed'").fetchone()[0] == 5
+    )
+
+
+async def test_retention_keeps_the_most_recent_runs(writer: sqlite3.Connection) -> None:
+    for _ in range(services.INDEX_RUN_RETENTION + 25):
+        run_id, _ = services.start_run_record(writer, "incremental")
+        services._finish_run(
+            writer, services.IndexRunResult(run_id=run_id, mode="incremental", status="success")
+        )
+
+    kept = [r["id"] for r in writer.execute("SELECT id FROM index_runs ORDER BY id").fetchall()]
+    assert len(kept) == services.INDEX_RUN_RETENTION
+    assert kept[-1] == services.INDEX_RUN_RETENTION + 25  # newest survived
+    assert kept[0] == 26  # oldest 25 were trimmed
