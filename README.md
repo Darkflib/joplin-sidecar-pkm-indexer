@@ -44,7 +44,7 @@ Environment variables:
 |---|---|---|
 | `PKM_SIDECAR_HOST` | `127.0.0.1` | bind host (localhost only unless `--allow-non-localhost`) |
 | `PKM_SIDECAR_PORT` | `8765` | bind port |
-| `PKM_SIDECAR_API_TOKEN` | _(ephemeral)_ | bearer token for `/api/*`; if unset, one is generated |
+| `PKM_SIDECAR_API_TOKEN` | _(ephemeral on loopback)_ | bearer token for `/api/*`; generated if unset, but a non-localhost bind requires an explicit one |
 | `PKM_SIDECAR_DB_PATH` | `~/.local/share/pkm-sidecar/index.sqlite3` | SQLite index path |
 | `PKM_SIDECAR_CONFIG_PATH` | `~/.config/pkm-sidecar/config.toml` | optional TOML config |
 | `PKM_SIDECAR_LOG_LEVEL` | `INFO` | log level |
@@ -87,6 +87,11 @@ set one, the sidecar **mints an ephemeral token at startup**, writes it `0600` t
 a per-user runtime file, and logs that file's *path* (never the value) once. The
 dashboard receives the token via a URL fragment from `pkm-sidecar open` (or the
 launcher) — never embedded in HTML.
+
+A non-localhost bind is the exception: there the ephemeral fallback does **not**
+apply, and `serve` exits 3 before minting anything. A token the operator never
+saw is not adequate protection for an API other hosts can reach, so set
+`PKM_SIDECAR_API_TOKEN` explicitly for that case.
 
 ## Running
 
