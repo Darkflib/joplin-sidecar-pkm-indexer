@@ -22,10 +22,13 @@ below.
   traceback *and* an `index.incremental.failed` ERROR line on every tick, so an
   overnight outage produced thousands of each. Both are now rate-limited to one
   per error type per five minutes; the first failure is logged in full and, if it
-  persists, the next line reports how many ticks have failed in a row. Recovery
-  clears the cooldown so a later outage is reported immediately. `/api/status`
-  keeps reporting `last_error` throughout, and a one-shot `index sync` still logs
-  its single failure. This is what `docs/launcher.md` already claimed about log
+  persists, the next line reports how many ticks have failed in a row. Only a
+  tick that runs end to end counts as recovery and clears the cooldown — `/events`
+  merely answering is not enough, because when it is the *processing* of a batch
+  that keeps failing the cursor never advances, so the next tick refetches the
+  same batch and would otherwise log afresh every poll. `/api/status` keeps
+  reporting `last_error` throughout, and a one-shot `index sync` still logs its
+  single failure. This is what `docs/launcher.md` already claimed about log
   hygiene under the launcher's "Copy diag".
 - **The non-localhost bind guard is actually wired up.** `serve --host 0.0.0.0
   --allow-non-localhost` with no `PKM_SIDECAR_API_TOKEN` started happily behind
@@ -33,7 +36,10 @@ below.
   unit-tested, but nothing in `app.py` or `cli.py` ever called it — so the
   README's security-model promise was not enforced. Now checked in both `serve`
   (exit 3) and the app lifespan, and before `resolve_api_token` runs, so a
-  refused bind never writes a token file it is about to abandon.
+  refused bind never writes a token file it is about to abandon. The lifespan
+  also re-runs `validate_bind_address`, which previously lived only in the CLI —
+  an embedder calling `create_app` directly could bind a non-loopback host
+  without ever setting `allow_non_localhost`.
 
 ### Changed
 - `assert_non_local_bind_has_token` now takes the `AppConfig` alone rather than
@@ -60,10 +66,14 @@ below.
   read-only `permissions` block; and `persist-credentials: false` on every
   checkout, since no job runs authenticated git commands.
 - `.github/dependabot.yml` — monthly GitHub Actions and uv dependency updates.
-- 18 regression tests covering the three fixes above (310 total, 91% coverage).
+- 21 regression tests covering the three fixes above (313 total, 91% coverage).
   The suite previously only ever ran short scenarios, which is why none of these
   defects showed up — the new tests assert what happens on the *n*th tick, during
   a sustained outage, and on a refused start.
+- An autouse fixture in `tests/conftest.py` resetting the process-global failure
+  log guard around every test. It deliberately spans ticks, so it also spanned
+  tests: without the reset, the first test to log a given error type silenced
+  every later one and log-volume assertions passed or failed on test ordering.
 
 ### Removed
 - A stray `.DS_Store` committed at the repo root (now gitignored).

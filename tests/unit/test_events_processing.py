@@ -5,11 +5,14 @@ import logging
 import sqlite3
 from pathlib import Path
 
+import httpx
 import pytest
 
 from pkm_sidecar import db, logging_config, services
 from pkm_sidecar.config import AppConfig, load_config
+from pkm_sidecar.errors import JoplinError
 from pkm_sidecar.indexer import create_indexer
+from pkm_sidecar.joplin_client import JoplinClient
 from pkm_sidecar.repositories import NoteRepository
 from pkm_sidecar.services import ITEM_TYPE_FOLDER, ITEM_TYPE_NOTE, ITEM_TYPE_TAG
 from tests._fake_joplin import FakeJoplin
@@ -240,3 +243,63 @@ class TestOutageLogging:
         assert handle._consecutive_tick_failures > 5  # plenty of ticks failed
         assert len(self._tick_failures(caplog)) == 1  # one line in the log
         assert handle.last_error is not None  # still visible to /api/status
+
+    async def test_failing_batch_processing_is_rate_limited_too(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """/events answering is not recovery — the tick has to finish.
+
+        When `/events` succeeds but applying the batch fails, the cursor does not
+        advance, so every tick refetches the same batch. Resetting the guard as
+        soon as `/events` answered meant each of those ticks logged afresh, one
+        `index.incremental.failed` line per poll for as long as it lasted.
+        """
+        fake = FakeJoplin()
+        fake.add_note("n1", "T", "b")
+        fake.push_event(ITEM_TYPE_NOTE, "n1", 2)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # /events keeps working; fetching the note it points at does not.
+            if request.url.path.startswith("/notes/"):
+                return httpx.Response(500, json={"error": "boom"})
+            return fake.handler(request)
+
+        client = JoplinClient(
+            "http://127.0.0.1:41184",
+            "tok",
+            transport=httpx.MockTransport(handler),
+            max_retries=0,
+            backoff_initial=0.0,
+        )
+        async with client:
+            with caplog.at_level(logging.DEBUG):
+                for _ in range(15):
+                    with pytest.raises(JoplinError):
+                        await services.incremental_sync_once(writer, client, cfg)
+
+        assert sum("index.incremental.failed" in r.message for r in caplog.records) == 1
+        # The batch really was retried every tick (the cursor never advanced).
+        assert NoteRepository(writer).get_meta(db.META_LAST_EVENT_ID) is None
+
+    async def test_a_completed_tick_still_counts_as_recovery(
+        self, cfg: AppConfig, writer: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Narrowing the reset must not stop a real recovery from clearing it."""
+        fake = FakeJoplin(events_status=500)
+        fake.add_note("n1", "T", "b")
+        async with fake.client() as client:
+            with caplog.at_level(logging.DEBUG):
+                with pytest.raises(JoplinError):
+                    await services.incremental_sync_once(writer, client, cfg)
+
+                fake.events_status = 200  # Joplin comes back; this tick completes
+                fake.push_event(ITEM_TYPE_NOTE, "n1", 2)
+                assert (await services.incremental_sync_once(writer, client, cfg)).status == (
+                    "success"
+                )
+
+                fake.events_status = 500  # and fails again
+                with pytest.raises(JoplinError):
+                    await services.incremental_sync_once(writer, client, cfg)
+
+        assert sum("index.incremental.failed" in r.message for r in caplog.records) == 2

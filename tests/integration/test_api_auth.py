@@ -109,3 +109,25 @@ class TestNonLocalBindGuard:
 
     def test_loopback_start_is_unaffected(self, client: TestClient) -> None:
         assert client.get("/health").status_code == 200
+
+    def test_startup_refused_without_the_explicit_override(self, tmp_path, monkeypatch) -> None:
+        """An embedder reaching create_app directly still needs the opt-in.
+
+        The CLI runs validate_bind_address before it ever builds the app, so
+        without the same check in the lifespan a non-loopback host with a
+        configured token started happily — no override required.
+        """
+        monkeypatch.setenv("PKM_SIDECAR_RUNTIME_DIR", str(tmp_path / "rt"))
+        (tmp_path / "cfg").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "cfg" / "config.toml").write_text("")
+        cfg = load_config(
+            env={
+                "PKM_SIDECAR_DB_PATH": str(tmp_path / "data" / "index.sqlite3"),
+                "PKM_SIDECAR_CONFIG_PATH": str(tmp_path / "cfg" / "config.toml"),
+                "PKM_SIDECAR_HOST": "0.0.0.0",
+                "PKM_SIDECAR_API_TOKEN": "chosen",  # token is fine; the override is missing
+            }
+        )
+        assert cfg.server.allow_non_localhost is False
+        with pytest.raises(SecurityError), TestClient(create_app(cfg, start_indexer_loop=False)):
+            pass  # pragma: no cover - lifespan raises before the body runs

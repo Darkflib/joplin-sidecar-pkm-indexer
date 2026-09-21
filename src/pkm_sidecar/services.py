@@ -412,12 +412,10 @@ async def incremental_sync_once(
         _record_failed_run(conn, result, started_at)
         raise
 
-    # Joplin answered, so any outage is over and the next failure is news again.
-    _FAILURE_LOG_GUARD.reset()
-
     if not batch["items"]:
         with repo.transaction():
             _advance_cursor(repo, batch, started_at)
+        _FAILURE_LOG_GUARD.reset()
         return result
 
     run_id = _start_run(conn, "incremental", started_at)
@@ -493,5 +491,10 @@ async def incremental_sync_once(
         _log_incremental_failure(run_id, exc)
         _finish_run(conn, result)
         raise
+    # Only a tick that ran end to end counts as recovery. Resetting as soon as
+    # /events answered would defeat the guard whenever the *processing* of a
+    # batch is what keeps failing: the cursor does not advance, so the next tick
+    # refetches the same batch, resets again, and logs again — once per poll.
+    _FAILURE_LOG_GUARD.reset()
     _finish_run(conn, result)
     return result
