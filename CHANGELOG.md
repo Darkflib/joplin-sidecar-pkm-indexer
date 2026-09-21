@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Dependencies refreshed** (`uv lock --upgrade`), superseding the open
+  Dependabot PRs in one pass rather than eight sequential rebases: uvicorn
+  0.52.1→0.53.0, pydantic 2.13.4→2.13.5, typer 0.27.1→0.27.2, anyio
+  4.14.2→4.15.1, plus dev tooling (ruff 0.16.2→0.16.8, mypy 2.3.0→2.3.1,
+  coverage 7.15.4→7.16.1, pre-commit 4.6.1→4.6.2) and transitives. Declared
+  floors track what CI exercises: `uvicorn[standard]>=0.53`, `ruff>=0.16.8`.
+- `astral-sh/setup-uv` v10.0.1→v10.1.0 in CI. `actions/checkout` is already v7.
+- `ruff-pre-commit` rev v0.16.2→v0.16.8, kept in step with the `ruff` pin as the
+  config comment requires. Ruff 0.16.8 reports no new findings and reformats
+  nothing.
+
 No schema change. Fixes three defects that only show up over a long unattended
 run — the sidecar's actual deployment mode — plus the dependency/CI maintenance
 below.
