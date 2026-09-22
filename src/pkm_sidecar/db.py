@@ -30,6 +30,12 @@ SCHEMA_VERSION_KEY = "schema.version"
 META_LAST_EVENT_ID = "joplin.last_event_id"
 META_LAST_FULL_INDEX_AT = "joplin.last_full_index_at"
 META_LAST_INCREMENTAL_INDEX_AT = "joplin.last_incremental_index_at"
+# Set in the same transaction that wipes the derived tables and cleared in the
+# one that stamps META_LAST_FULL_INDEX_AT, so its presence means exactly "the
+# derived tables were emptied and not yet refilled". A rebuild that is killed or
+# fails in between leaves it behind, which is how startup knows to redo the work
+# instead of serving a half-built index (see services.rebuild_reason).
+META_REBUILD_IN_PROGRESS = "joplin.rebuild_in_progress"
 
 _LOCK_RETRY_DELAYS = (0.05, 0.2, 0.5)
 
@@ -145,15 +151,21 @@ def fts_available(conn: sqlite3.Connection) -> bool:
         return False
 
 
-def reset_derived(conn: sqlite3.Connection) -> None:
+def reset_derived(conn: sqlite3.Connection, *, started_at: int) -> None:
     """Clear derived/link tables before a full rebuild, preserving the entities.
 
     Wipes ``extracted_tasks``, ``extracted_links``, ``note_tags`` and the event
     cursor / incremental timestamp. ``notes``/``folders``/``tags`` are kept so the
     rebuild upserts them (preserving ``notes.rowid`` for FTS); orphaned rows are
     marked deleted afterwards by ``sweep_orphans``.
+
+    Raises the :data:`META_REBUILD_IN_PROGRESS` flag (to *started_at*) in the same
+    transaction as the wipe, so the "derived data is incomplete" marker can never
+    be missing while the tables are empty. :func:`clear_rebuild_in_progress`
+    lowers it once the rebuild finishes.
     """
     with transaction(conn):
+        set_meta(conn, META_REBUILD_IN_PROGRESS, str(started_at))
         conn.execute("DELETE FROM extracted_tasks")
         conn.execute("DELETE FROM extracted_links")
         conn.execute("DELETE FROM note_tags")
@@ -165,3 +177,19 @@ def reset_derived(conn: sqlite3.Connection) -> None:
                 META_LAST_INCREMENTAL_INDEX_AT,
             ),
         )
+
+
+def clear_rebuild_in_progress(conn: sqlite3.Connection) -> None:
+    """Lower the incomplete-index flag. Caller owns the transaction."""
+    conn.execute("DELETE FROM meta WHERE key = ?", (META_REBUILD_IN_PROGRESS,))
+
+
+def rebuild_in_progress_since(conn: sqlite3.Connection) -> int | None:
+    """When the unfinished rebuild started (epoch seconds), or None if there is none."""
+    raw = get_meta(conn, META_REBUILD_IN_PROGRESS)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:  # hand-edited or corrupt: still means "incomplete"
+        return 0

@@ -44,7 +44,12 @@ def test_status_ok_with_auth(cfg: AppConfig) -> None:
         "last_full_index_at",
         "last_incremental_index_at",
         "last_event_id",
+        "index_incomplete",
+        "rebuild_in_progress",
     }
+    # A freshly built index is whole and idle.
+    assert body["indexing"]["index_incomplete"] is False
+    assert body["indexing"]["rebuild_in_progress"] is False
 
 
 def test_status_never_contains_joplin_token(cfg: AppConfig) -> None:

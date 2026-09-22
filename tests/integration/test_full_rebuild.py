@@ -2,8 +2,13 @@
 
 import sqlite3
 
-from pkm_sidecar import services
+import httpx
+import pytest
+
+from pkm_sidecar import db, services
 from pkm_sidecar.config import AppConfig
+from pkm_sidecar.errors import JoplinError
+from pkm_sidecar.joplin_client import JoplinClient
 from pkm_sidecar.repositories import NoteRepository
 from tests._fake_joplin import FakeJoplin
 
@@ -82,3 +87,75 @@ async def test_rebuild_issues_only_get_requests(cfg: AppConfig, writer: sqlite3.
     async with fake.client() as client:
         await services.full_rebuild(writer, client, cfg)
     assert fake.only_get_requests()  # PRD §18.10 no-mutation invariant
+
+
+class TestIncompleteIndexFlag:
+    """The flag brackets the window where the derived tables are known-partial."""
+
+    async def test_successful_rebuild_leaves_no_flag(
+        self, cfg: AppConfig, writer: sqlite3.Connection
+    ) -> None:
+        fake = FakeJoplin()
+        fake.add_note("n1", "One", "- [ ] task")
+        async with fake.client() as client:
+            await services.full_rebuild(writer, client, cfg)
+        assert db.rebuild_in_progress_since(writer) is None
+        assert services.rebuild_reason(cfg, writer) is None
+
+    async def test_rebuild_that_fails_partway_leaves_the_flag_up(
+        self, cfg: AppConfig, writer: sqlite3.Connection
+    ) -> None:
+        """Joplin going away mid-rebuild wipes the derived tables just the same."""
+        fake = FakeJoplin()
+        fake.add_note("n1", "One", "- [ ] task")
+        fake.add_tag("t1", "work", note_ids=("n1",))
+        async with fake.client() as client:
+            await services.full_rebuild(writer, client, cfg)  # a good run first
+            assert writer.execute("SELECT count(*) FROM extracted_tasks").fetchone()[0] == 1
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                if request.url.path == "/notes":  # dies after reset_derived
+                    return httpx.Response(500, json={"error": "boom"})
+                return fake.handler(request)
+
+            broken = JoplinClient(
+                "http://127.0.0.1:41184",
+                "tok",
+                transport=httpx.MockTransport(handler),
+                max_retries=0,
+                backoff_initial=0.0,
+            )
+            async with broken:
+                with pytest.raises(JoplinError):
+                    await services.full_rebuild(writer, broken, cfg)
+
+        # Derived data really is gone, and the old completion stamp still stands…
+        assert writer.execute("SELECT count(*) FROM extracted_tasks").fetchone()[0] == 0
+        assert writer.execute("SELECT count(*) FROM note_tags").fetchone()[0] == 0
+        assert NoteRepository(writer).get_meta(db.META_LAST_FULL_INDEX_AT) is not None
+        # …so the flag is the only thing that knows, and it does.
+        assert services.rebuild_reason(cfg, writer) == "interrupted_rebuild"
+
+    async def test_the_next_rebuild_repairs_the_index_and_clears_the_flag(
+        self, cfg: AppConfig, writer: sqlite3.Connection
+    ) -> None:
+        """End to end: wipe, interrupt, restart, and the views are whole again."""
+        fake = FakeJoplin()
+        fake.add_note("n1", "One", "- [ ] a task")
+        fake.add_tag("t1", "work", note_ids=("n1",))
+        repo = NoteRepository(writer)
+
+        async with fake.client() as client:
+            await services.full_rebuild(writer, client, cfg)
+            db.reset_derived(writer, started_at=1700000123)  # killed mid-rebuild
+
+            # What a restart would see before it acts.
+            assert [n.id for n in repo.fetch_untagged()] == ["n1"]  # wrong: n1 is tagged
+            assert [n.id for n in repo.fetch_todos()] == []  # wrong: n1 has an open task
+            assert services.rebuild_reason(cfg, writer) == "interrupted_rebuild"
+
+            await services.full_rebuild(writer, client, cfg)  # what startup dispatches
+
+        assert [n.id for n in repo.fetch_untagged()] == []
+        assert [n.id for n in repo.fetch_todos()] == ["n1"]
+        assert services.rebuild_reason(cfg, writer) is None

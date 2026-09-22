@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sqlite3
+import time
 
 from pkm_sidecar import services
 from pkm_sidecar.config import AppConfig
@@ -26,6 +27,12 @@ _STOP_DEADLINE_SECONDS = 3.0
 # ``event_poll_seconds`` (10s by default), so an overnight Joplin outage would
 # otherwise emit thousands of identical tracebacks (PRD §17.2).
 _TICK_FAILURE_COOLDOWN_SECONDS = 300.0
+# Backoff between attempts to repair a known-incomplete index. A rebuild is far
+# heavier than a sync tick, so a Joplin that stays down must not be hammered with
+# one every poll interval — but the index stays broken until one succeeds, so the
+# retries have to keep coming.
+_RECOVERY_BACKOFF_BASE_SECONDS = 30.0
+_RECOVERY_BACKOFF_MAX_SECONDS = 900.0
 
 
 class IndexerHandle:
@@ -44,6 +51,8 @@ class IndexerHandle:
         self._last_error: str | None = None
         self._tick_failure_guard = LogOnceGuard()
         self._consecutive_tick_failures = 0
+        self._recovery_failures = 0
+        self._next_recovery_at = 0.0  # time.monotonic() deadline
 
     # --- introspection -----------------------------------------------------
 
@@ -176,11 +185,46 @@ class IndexerHandle:
                 type(exc).__name__,
             )
 
+    async def _tick(self) -> None:
+        """One pass of the loop: repair a broken index, or sync a healthy one.
+
+        While the index is flagged incomplete, repairing it *is* the work — the
+        loop must not fall through to incremental sync. Incremental polling only
+        applies events from the cursor forward, and ``reset_derived`` cleared the
+        cursor, so it can never refill the derived tables; it would just advance
+        the cursor and refresh "last synced" over an index that is still missing
+        every task, link and tag. Before this, a startup recovery that failed
+        because Joplin was not up yet (a plausible race: the launcher spawns the
+        sidecar from inside Joplin, whose Web Clipper service may not be
+        listening yet) left the index broken until the next restart.
+        """
+        reason = services.rebuild_reason(self.cfg, self.conn)
+        if reason is None:
+            await self.run_incremental_once()
+            return
+        if self._rebuild_in_progress:
+            return  # startup dispatched one, or a previous tick did; let it finish
+        if time.monotonic() < self._next_recovery_at:
+            return  # backing off after a failed attempt
+        log_event(logger, "index.full.started", reason=reason, retry=self._recovery_failures)
+        try:
+            await self.run_full_rebuild()
+        except Exception:
+            self._recovery_failures += 1
+            delay = min(
+                _RECOVERY_BACKOFF_MAX_SECONDS,
+                _RECOVERY_BACKOFF_BASE_SECONDS * 2 ** (self._recovery_failures - 1),
+            )
+            self._next_recovery_at = time.monotonic() + delay
+            raise
+        self._recovery_failures = 0
+        self._next_recovery_at = 0.0
+
     async def _run_loop(self) -> None:
         log_event(logger, "service.start", component="indexer")
         while not self._stop.is_set():
             try:
-                await self.run_incremental_once()
+                await self._tick()
                 # Recovered: let the next failure log immediately rather than
                 # being swallowed by a cooldown left over from an earlier outage.
                 self._consecutive_tick_failures = 0

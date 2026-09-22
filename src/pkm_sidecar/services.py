@@ -115,6 +115,36 @@ def needs_initial_rebuild(cfg: AppConfig, conn: sqlite3.Connection) -> bool:
     )
 
 
+def rebuild_reason(cfg: AppConfig, conn: sqlite3.Connection) -> str | None:
+    """Why ``serve`` should kick off a full rebuild at startup, or None.
+
+    Two cases, in priority order:
+
+    ``interrupted_rebuild``
+        A previous rebuild wiped the derived tables and never finished — killed
+        mid-run, or failed partway. Only ``last_full_index_at`` marks a rebuild as
+        done, and it still holds the *previous* run's value, so nothing else
+        notices: the index quietly serves partial tasks/links/tags (an "Untagged"
+        column listing every note, an empty "TODOs") until someone rebuilds by
+        hand. Recovery is deliberately **not** gated on ``rebuild_on_empty_start``
+        — that option exists to skip the cost of backfilling a *fresh* index, not
+        to opt into serving a known-broken one.
+
+    ``empty_index_backfill``
+        A first launch under the launcher, where incremental sync alone would
+        never backfill the notes that already exist.
+
+    Both need a Joplin token; without one no rebuild is possible.
+    """
+    if cfg.joplin.token is None:
+        return None
+    if db.rebuild_in_progress_since(conn) is not None:
+        return "interrupted_rebuild"
+    if needs_initial_rebuild(cfg, conn):
+        return "empty_index_backfill"
+    return None
+
+
 def _now() -> int:
     """Epoch seconds — for human-facing meta timestamps and index_runs."""
     return int(time.time())
@@ -272,7 +302,7 @@ async def full_rebuild(
     page = cfg.joplin.page_limit
 
     try:
-        db.reset_derived(conn)
+        db.reset_derived(conn, started_at=started_at)
 
         # Folders.
         async for chunk in _chunked(client.get_folders(fields=FOLDER_FIELDS), page):
@@ -326,6 +356,10 @@ async def full_rebuild(
         with repo.transaction():
             repo.sweep_orphans(run_started)
             repo.set_meta(db.META_LAST_FULL_INDEX_AT, str(started_at))
+            # Same transaction as the completion stamp: the index is only
+            # declared whole and the flag lowered together, never one or the
+            # other. An exception before here leaves the flag up on purpose.
+            db.clear_rebuild_in_progress(conn)
 
         log_event(
             logger,
