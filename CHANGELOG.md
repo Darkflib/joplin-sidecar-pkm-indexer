@@ -6,6 +6,31 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Enrichment store (step 1 of [docs/enrichment.md](docs/enrichment.md))** — the
+  `pkm_sidecar.enrichment` subpackage with `suggestions.sqlite3`, its repository
+  and an `[enrichment]` config section. No generation yet, and nothing is written
+  back to Joplin. Off by default.
+  - A *separate* database beside the index: suggestions regenerate, but the
+    accept/reject decisions on them do not, and the index's documented upgrade
+    path is "delete the file". The index schema is untouched (still v2), so no
+    delete-and-resync is forced on anyone.
+  - Suggestion identity is an `input_hash` over the body hash, the state being
+    replaced, the model and the prompt version — `notes.body_hash` covers the
+    body alone, so keying on it would let a retitle reuse an old rejection.
+  - `generation` + `superseded_by` let a corpus re-queue coexist with the row it
+    replaces; only the newest is offered for review, and a regenerated payload
+    that was already rejected inherits that rejection rather than re-asking.
+  - `note_embeddings` is keyed `(note_id, model)` and reuse requires the body
+    hash *and* model to match: vectors from different embedding models are not
+    comparable, so a body-only lookup would silently corrupt nearest-neighbour
+    results after a model change.
+  - `warn_if_enrichment_endpoint_is_cleartext` warns when note bodies would
+    cross a network in cleartext to Ollama's unauthenticated API (CWE-319).
+  - The enrichment `schema.sql` is packaged and asserted in CI's build job, like
+    the index schema and templates — it is read at runtime, so absence is an
+    install-time break rather than a test failure.
+
 ### Changed
 - **Dependencies refreshed** (`uv lock --upgrade`), superseding the open
   Dependabot PRs in one pass rather than eight sequential rebases: uvicorn

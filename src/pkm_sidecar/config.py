@@ -123,6 +123,37 @@ class IndexingConfig(BaseModel):
     rebuild_on_empty_start: bool = True
 
 
+class EnrichmentConfig(BaseModel):
+    """Suggested titles and tags (docs/enrichment.md). Off by default.
+
+    Enabling this sends note bodies to the configured Ollama host, which is a
+    real change in where your content goes — hence opt-in, and hence
+    :func:`warn_if_enrichment_endpoint_is_cleartext`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    title_model: str = "llama3.1:8b"
+    tag_model: str = "llama3.1:8b"
+    embedding_model: str = "bge-large:335m-en-v1.5-fp16"
+    max_tags_per_note: int = 3
+    neighbours: int = 25
+    # Defaults to suggestions.sqlite3 beside the index; see suggestions_db_path.
+    db_path: Path | None = None
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def _check_base_url(cls, v: str) -> str:
+        return _normalise_base_url(v)
+
+    @field_validator("db_path")
+    @classmethod
+    def _expand(cls, v: Path | None) -> Path | None:
+        return None if v is None else v.expanduser()
+
+
 class AppConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -131,6 +162,7 @@ class AppConfig(BaseModel):
     database: DatabaseConfig
     logging: LoggingConfig
     indexing: IndexingConfig
+    enrichment: EnrichmentConfig = EnrichmentConfig()
     # Source TOML file, if one was loaded (None means env/defaults only).
     config_path: Path | None = None
     # Always False from config: the security subsystem mints and tracks any
@@ -152,6 +184,8 @@ _ENV_MAP: dict[str, tuple[str, str]] = {
     "JOPLIN_TOKEN": ("joplin", "token"),
     "JOPLIN_EVENT_POLL_SECONDS": ("joplin", "event_poll_seconds"),
     "JOPLIN_PAGE_LIMIT": ("joplin", "page_limit"),
+    "PKM_SIDECAR_ENRICHMENT_ENABLED": ("enrichment", "enabled"),
+    "PKM_SIDECAR_OLLAMA_BASE_URL": ("enrichment", "ollama_base_url"),
 }
 
 # Map CLI override key -> (section, field). Only flags the user actually set
@@ -169,6 +203,7 @@ _CLI_MAP: dict[str, tuple[str, str]] = {
 # default) rather than an error. PKM_SIDECAR_PORT="" is deliberately NOT here:
 # an empty port must surface as a validation error (PRD §7 decision).
 _EMPTY_AS_UNSET: set[tuple[str, str]] = {
+    ("enrichment", "ollama_base_url"),
     ("server", "api_token"),
     ("joplin", "token"),
     ("joplin", "base_url"),
@@ -220,7 +255,7 @@ def _load_toml(config_path: Path, *, explicit: bool) -> dict[str, Any]:
         raise ConfigError(f"Config file is not valid TOML: {config_path} ({exc})") from exc
 
     sections: dict[str, Any] = {}
-    for section in ("server", "joplin", "database", "logging", "indexing"):
+    for section in ("server", "joplin", "database", "logging", "indexing", "enrichment"):
         if section in parsed and isinstance(parsed[section], dict):
             sections[section] = dict(parsed[section])
     return sections
@@ -266,6 +301,7 @@ def load_config(
         "database": dict(toml_sections.get("database", {})),
         "logging": dict(toml_sections.get("logging", {})),
         "indexing": dict(toml_sections.get("indexing", {})),
+        "enrichment": dict(toml_sections.get("enrichment", {})),
     }
     _layer_env(layers, env)
     _layer_cli(layers, cli_overrides)
@@ -277,6 +313,7 @@ def load_config(
             database=DatabaseConfig(**layers["database"]),
             logging=LoggingConfig(**layers["logging"]),
             indexing=IndexingConfig(**layers["indexing"]),
+            enrichment=EnrichmentConfig(**layers["enrichment"]),
             config_path=chosen_path if toml_sections else None,
         )
     except ValueError as exc:
@@ -292,6 +329,36 @@ def load_config(
         logger.warning("No Joplin token configured; indexing operations will be unavailable.")
 
     return cfg
+
+
+def suggestions_db_path(cfg: AppConfig) -> Path:
+    """Where the enrichment store lives — beside the index unless overridden."""
+    if cfg.enrichment.db_path is not None:
+        return cfg.enrichment.db_path
+    return cfg.database.path.parent / "suggestions.sqlite3"
+
+
+def warn_if_enrichment_endpoint_is_cleartext(cfg: AppConfig, log: logging.Logger) -> bool:
+    """Warn when note bodies would cross a network in cleartext (CWE-319).
+
+    Ollama's API is unauthenticated, so plain HTTP to anything but loopback puts
+    the full text of every indexed note on the wire for anyone on the path.
+    Returns True if a warning was issued, so callers (doctor) can report it.
+    """
+    if not cfg.enrichment.enabled:
+        return False
+    url = cfg.enrichment.ollama_base_url
+    parsed = _HTTP_URL_ADAPTER.validate_python(url)
+    host = parsed.host or ""
+    if parsed.scheme == "https" or is_loopback_host(host):
+        return False
+    log.warning(
+        "Enrichment will send note bodies to %s over plain HTTP to an unauthenticated "
+        "API. Prefer loopback, an encrypted overlay (Tailscale/WireGuard), or an SSH "
+        "tunnel rather than trusting the local network.",
+        url,
+    )
+    return True
 
 
 def require_joplin_token(cfg: AppConfig) -> str:

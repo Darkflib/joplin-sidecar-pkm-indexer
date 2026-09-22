@@ -109,6 +109,7 @@ jobs:
           # static), so absence is an install-time break, not a test failure.
           REQUIRED = [
               "schema.sql",
+              "enrichment/schema.sql",
               "templates/base.html",
               "templates/index.html",
               "static/dashboard.css",
