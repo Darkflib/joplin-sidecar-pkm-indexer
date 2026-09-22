@@ -97,6 +97,15 @@ What **does** change: note bodies leave the process for the Ollama host. That is
 a real shift in data flow, which is why enrichment is off by default and the
 endpoint is explicit configuration rather than a default.
 
+Over plain `http://` those bodies cross the network in cleartext (CWE-319), and
+Ollama's API is unauthenticated. For a vault that is someone's entire personal
+knowledge base that deserves naming rather than assuming a LAN is trustworthy.
+On a single host, point it at loopback. Across hosts, put it on an encrypted
+overlay — the Tailscale/Headscale mesh these boxes already run is the obvious
+fit — or an SSH tunnel, rather than trusting the LAN. Validate the configured
+URL's scheme at startup and warn loudly when a non-loopback endpoint is plain
+HTTP.
+
 ## 4. Storage
 
 A separate `suggestions.sqlite3` beside the index. Rationale: suggestions are
@@ -120,10 +129,12 @@ CREATE TABLE suggestions (
     confidence        REAL,
     reason            TEXT,               -- why the note was a candidate
     stale             INTEGER NOT NULL DEFAULT 0,
+    generation        INTEGER NOT NULL DEFAULT 1,   -- bumped on a corpus re-queue
+    superseded_by     INTEGER REFERENCES suggestions(id),
     decision          TEXT,               -- NULL | 'accepted' | 'rejected'
     decided_at        INTEGER,
     created_at        INTEGER NOT NULL,
-    UNIQUE(note_id, kind, input_hash)
+    UNIQUE(note_id, kind, input_hash, generation)
 );
 
 -- "Leave this note's title alone", distinct from rejecting one suggestion.
@@ -134,12 +145,17 @@ CREATE TABLE opt_outs (
 );
 
 -- Derived, but kept here so the index schema stays untouched.
+-- Keyed by model as well as note: vectors from different embedding models are
+-- not comparable, so a body-only lookup after an `embedding_model` change would
+-- silently mix spaces and corrupt every nearest-neighbour result. Reuse requires
+-- *both* body_hash and model to match.
 CREATE TABLE note_embeddings (
-    note_id    TEXT PRIMARY KEY,
-    body_hash  TEXT NOT NULL,
+    note_id    TEXT NOT NULL,
     model      TEXT NOT NULL,
+    body_hash  TEXT NOT NULL,
     vector     BLOB NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (note_id, model)
 );
 ```
 
@@ -183,6 +199,13 @@ while still being served until a replacement exists. Staleness is a signal to
 regenerate, not a reason to hide a suggestion that is probably still right.
 Define the revision coarsely (tagged-note count plus tag-vocabulary size, say)
 so ordinary day-to-day tagging does not trip it.
+
+Serving the old row *while* its replacement is generated means both must exist
+at once, and they share an `input_hash` by construction — so `generation` is in
+the uniqueness key and the superseded row points at its replacement. Two rules
+keep that from becoming a nagging machine: only the highest generation is
+offered for review, and a regenerated suggestion whose payload matches one you
+already rejected inherits that rejection instead of asking again.
 
 ## 5. Titles pipeline
 
