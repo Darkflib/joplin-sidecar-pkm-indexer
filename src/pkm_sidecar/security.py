@@ -8,9 +8,11 @@ Single source for the project's security invariants:
   non-local bind additionally requires a *configured* (non-ephemeral) API token.
 * **Bearer auth** — :func:`verify_bearer_token` (constant-time) raises
   :class:`~pkm_sidecar.errors.AuthError`, which the API layer maps to 401.
-* **No external network (PRD §8.5)** — :class:`LocalOnlyTransport` and
-  :func:`assert_url_is_joplin_base` refuse any request whose URL is not the
-  configured Joplin base.
+* **No external network (PRD §8.5)** — :class:`SingleOriginTransport` and
+  :func:`assert_url_matches_base` refuse any request whose URL is not the one
+  origin that transport was built for. The Joplin client gets one fenced to the
+  Joplin base; enrichment gets a *separate* instance fenced to Ollama. The fence
+  is per-client, so adding a second origin never widens the first.
 * **Token hygiene** — the ephemeral API token is minted here, written to a 0600
   file, registered with the canonical redaction filter, and never logged.
 
@@ -215,29 +217,32 @@ def _url_parts(url: str | httpx.URL) -> tuple[str, str, int]:
     return scheme, host, port
 
 
-def assert_url_is_joplin_base(url: str | httpx.URL, joplin_base_url: str) -> None:
-    """Raise :class:`SecurityError` unless *url* targets the configured Joplin base."""
-    if _url_parts(url) != _url_parts(joplin_base_url):
+def assert_url_matches_base(url: str | httpx.URL, base_url: str) -> None:
+    """Raise :class:`SecurityError` unless *url* targets exactly *base_url*'s origin."""
+    if _url_parts(url) != _url_parts(base_url):
         target = httpx.URL(url) if isinstance(url, str) else url
+        allowed = httpx.URL(base_url)
         raise SecurityError(
             f"Blocked outbound request to {target.scheme}://{target.host}:{target.port or ''}; "
-            "only the configured Joplin base URL is allowed."
+            f"this client may only reach {allowed.scheme}://{allowed.host}:{allowed.port or ''}."
         )
 
 
-class LocalOnlyTransport(httpx.AsyncBaseTransport):
-    """httpx transport that refuses any request outside the configured Joplin base.
+class SingleOriginTransport(httpx.AsyncBaseTransport):
+    """httpx transport that refuses any request outside the origin it was built for.
 
-    Runtime enforcement of "no external network access" (PRD §8.5), complementing
-    the structural guarantee that the Joplin client has only GET methods.
+    Runtime enforcement of "no external network access" (PRD §8.5). Each client
+    owns its own instance, so the Joplin client can only reach Joplin and the
+    enrichment client can only reach Ollama — a second permitted origin is a
+    second transport, never a wider allowlist on the first.
     """
 
-    def __init__(self, joplin_base_url: str, inner: httpx.AsyncBaseTransport | None = None) -> None:
-        self._base_url = joplin_base_url
+    def __init__(self, base_url: str, inner: httpx.AsyncBaseTransport | None = None) -> None:
+        self._base_url = base_url
         self._inner = inner or httpx.AsyncHTTPTransport()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        assert_url_is_joplin_base(request.url, self._base_url)
+        assert_url_matches_base(request.url, self._base_url)
         return await self._inner.handle_async_request(request)
 
     async def aclose(self) -> None:

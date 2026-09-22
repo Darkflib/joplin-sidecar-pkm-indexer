@@ -10,7 +10,7 @@ from pathlib import Path
 import pkm_sidecar
 
 SRC = Path(pkm_sidecar.__file__).parent
-# joplin_client owns the HTTP client; security owns LocalOnlyTransport / URL guard.
+# joplin_client owns the HTTP client; security owns SingleOriginTransport / URL guard.
 HTTPX_ALLOWED = {"joplin_client.py", "security.py"}
 
 

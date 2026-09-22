@@ -130,3 +130,46 @@ def test_serve_refuses_non_local_bind_on_an_ephemeral_token(
     assert "PKM_SIDECAR_API_TOKEN" in result.stderr
     # Refused before resolve_api_token could mint and write one.
     assert not list((tmp_path / "rt").glob("*.token"))
+
+
+def _enrich_env(tmp_path: Path, **extra: str) -> dict[str, str]:
+    env = _env(tmp_path, **extra)
+    (tmp_path / "cfg" / "config.toml").write_text(
+        "[enrichment]\nenabled = true\nollama_base_url = "
+        f'"{extra.pop("base", "http://127.0.0.1:9")}"\n'
+    )
+    return env
+
+
+def test_doctor_skips_enrichment_when_disabled(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["doctor"], env=_env(tmp_path))
+    assert "enrichment" in result.stdout
+    assert "SKIP: enrichment" in result.stdout
+
+
+def test_doctor_reports_unreachable_enrichment_host(tmp_path: Path) -> None:
+    result = runner.invoke(app, ["doctor"], env=_enrich_env(tmp_path))
+    assert "enrichment_reachable" in result.stdout
+    assert "FAIL" in result.stdout
+
+
+def test_cleartext_transport_warns_without_failing_the_run(tmp_path: Path) -> None:
+    """A LAN model host is a deliberate trade-off, not a broken configuration."""
+    env = _env(tmp_path)
+    (tmp_path / "cfg" / "config.toml").write_text(
+        '[enrichment]\nenabled = true\nollama_base_url = "http://192.0.2.10:11434"\n'
+    )
+    result = runner.invoke(app, ["doctor"], env=env)
+    assert "WARN: enrichment_transport" in result.stdout
+    # The WARN itself must not be what decides the exit code.
+    assert "cleartext" in result.stdout
+
+
+def test_loopback_enrichment_host_does_not_warn(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    (tmp_path / "cfg" / "config.toml").write_text(
+        '[enrichment]\nenabled = true\nollama_base_url = "http://127.0.0.1:11434"\n'
+    )
+    result = runner.invoke(app, ["doctor"], env=env)
+    assert "WARN: enrichment_transport" not in result.stdout
+    assert "OK: enrichment_transport" in result.stdout

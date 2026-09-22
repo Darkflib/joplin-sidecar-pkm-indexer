@@ -3,7 +3,7 @@
 **Read-only is structural**: this module exposes only ``get_*``/``ping`` methods
 and only ever calls ``self._client.get``. There is no code path that issues a
 POST/PUT/PATCH/DELETE — a unit test AST-scans this file to keep it that way. As a
-second layer, every request goes through :class:`security.LocalOnlyTransport`, so
+second layer, every request goes through :class:`security.SingleOriginTransport`, so
 a request to any host other than the configured Joplin base raises at runtime.
 
 The Joplin token is passed as a ``token`` query parameter; it is never logged
@@ -81,7 +81,7 @@ class JoplinClient:
         self._log = get_logger("joplin_client")
         self._ping_guard = LogOnceGuard()
         # Wrap the (real or test) transport so non-Joplin URLs are refused.
-        guarded = security.LocalOnlyTransport(self._base_url, transport)
+        guarded = security.SingleOriginTransport(self._base_url, transport)
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=httpx.Timeout(timeout, connect=5.0),

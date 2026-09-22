@@ -51,8 +51,8 @@ async def test_disallowed_path_is_refused() -> None:
 
 
 async def test_transport_is_local_only() -> None:
-    # The client wraps LocalOnlyTransport; a foreign URL raises SecurityError.
+    # The client wraps SingleOriginTransport; a foreign URL raises SecurityError.
     inner = httpx.MockTransport(lambda req: httpx.Response(200, json={}))
-    transport = joplin_client.security.LocalOnlyTransport("http://127.0.0.1:41184", inner)
+    transport = joplin_client.security.SingleOriginTransport("http://127.0.0.1:41184", inner)
     with pytest.raises(SecurityError):
         await transport.handle_async_request(httpx.Request("GET", "https://evil.example/x"))
