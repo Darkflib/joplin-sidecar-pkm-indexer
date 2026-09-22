@@ -7,6 +7,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Title worker and `pkm-sidecar enrich titles`** — completes step 4 of
+  [docs/enrichment.md](docs/enrichment.md). Walks candidates, routes each to the
+  URL or the model, and stores suggestions. Still writes nothing to Joplin, and
+  still refuses to run unless `[enrichment] enabled` is set.
+  - A plain serial queue. The measured workload is an overnight batch of ~87
+    model calls at about a second each, then a handful of notes a day, so the
+    absence of concurrency is the design rather than a gap in it.
+  - Cached by suggestion identity: a repeat run over 12 real notes went from
+    19s to 0.38s and spent no model calls.
+  - A single note failing is counted, not fatal — one bad note must not abandon
+    an overnight batch.
+  - Runs usefully with **no model host at all**: the slug path needs none, which
+    matters because for a dead bookmark the URL is the only title source that
+    will ever exist.
 - **Title generation (step 4 of [docs/enrichment.md](docs/enrichment.md))** —
   the slug path, prompt shaping and output cleaning. No worker yet, so nothing
   runs on its own.
