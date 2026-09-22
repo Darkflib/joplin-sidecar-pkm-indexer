@@ -255,3 +255,79 @@ class TestGeneratability:
         [c] = find_candidates(index)
         assert c.issue == "filename"
         assert c.generatable is False
+
+
+class TestFilenamePrecision:
+    """Prose that merely ends in an extension is not a filename.
+
+    The permissive version flagged 'Pipfile vs requirements.txt' in the real
+    vault — a good title about comparing the two, proposed for replacement.
+    """
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Pipfile vs requirements.txt",
+            "Read the attached report.pdf",
+            "Notes about screenshot.png",
+            "Why we moved off setup.py",
+        ],
+    )
+    def test_prose_ending_in_an_extension_is_kept(self, title: str) -> None:
+        assert classify_title(title) is None
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Screenshot_20250426-222044.png",
+            "c30bf163bf681efff5928bbe77996adc.png",
+            "invoice-2026.pdf",
+        ],
+    )
+    def test_contiguous_filenames_are_still_flagged(self, title: str) -> None:
+        assert classify_title(title) == "filename"
+
+
+class TestDecorationOnlyOpeningLines:
+    """A body opening with '---' or '***' must not blank out first_line."""
+
+    @pytest.mark.parametrize("opener", ["---", "***", "___", ">", "#", "- - -"])
+    def test_first_real_line_is_found(self, opener: str) -> None:
+        assert first_body_line(f"{opener}\nThe actual opening sentence.") == (
+            "The actual opening sentence."
+        )
+
+    def test_truncation_still_detected_behind_a_rule(self) -> None:
+        """Returning early here would silently disable truncation for these notes."""
+        line = "Many businesses face challenges developing essential tools like lead management"
+        assert classify_title(line[:70], f"---\n{line}\n\nmore") == "truncated_from_body"
+
+    def test_body_of_only_decoration_yields_nothing(self) -> None:
+        assert first_body_line("---\n***\n\n") == ""
+
+
+class TestSerialisation:
+    def test_generatable_survives_model_dump(self, index) -> None:
+        """It crosses the API boundary in step 7; a plain property would vanish."""
+        with db.transaction(index):
+            _add(index, "n1", "", "![x](:/" + "a" * 32 + ")")
+        [c] = find_candidates(index)
+        dumped = c.model_dump()
+        assert dumped["generatable"] is False
+        assert dumped["prose_words"] == 0
+
+
+class TestLimitEdgeCases:
+    @pytest.mark.parametrize("limit", [0, -1])
+    def test_non_positive_limit_returns_nothing(self, index, limit: int) -> None:
+        """limit=0 used to append one candidate before checking, returning one."""
+        with db.transaction(index):
+            _add(index, "n1", "Untitled", "body")
+            _add(index, "n2", "", "body")
+        assert find_candidates(index, limit=limit) == []
+
+    def test_limit_none_returns_everything(self, index) -> None:
+        with db.transaction(index):
+            _add(index, "n1", "Untitled", "body")
+            _add(index, "n2", "", "body")
+        assert len(find_candidates(index, limit=None)) == 2

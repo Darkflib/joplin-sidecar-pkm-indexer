@@ -20,7 +20,7 @@ import re
 import sqlite3
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 TitleIssue = Literal[
     "empty",
@@ -54,8 +54,14 @@ _DATE_ONLY_RE = re.compile(
 _URL_RE = re.compile(r"^(https?://|www\.)\S*$", re.IGNORECASE)
 _BARE_DOMAIN_RE = re.compile(r"^[\w.-]+\.(com|org|net|io|dev|co\.uk|uk|edu|gov)(/\S*)?$", re.I)
 
+# A single whitespace-free token. `\S.*` would swallow "Read the attached
+# report.pdf" and "Notes about screenshot.png" — prose titles that merely end in
+# an extension — which is the false-positive class this detector exists to avoid.
+# The trade is that filenames containing spaces are missed; in a real 2,240-note
+# vault every hit was of the form Screenshot_20250426-222044.png, so the stricter
+# rule loses nothing and removes a whole category of wrong suggestion.
 _FILENAME_RE = re.compile(
-    r"^\S.*\.(pdf|docx?|xlsx?|pptx?|txt|md|rtf|odt|ods|csv|eml|msg|html?|png|jpe?g)$",
+    r"^\S+\.(pdf|docx?|xlsx?|pptx?|txt|md|rtf|odt|ods|csv|eml|msg|html?|png|jpe?g)$",
     re.IGNORECASE,
 )
 
@@ -95,6 +101,7 @@ class TitleCandidate(BaseModel):
     first_line: str = ""
     prose_words: int = 0
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def generatable(self) -> bool:
         """Whether there is enough text for a model to title this from."""
@@ -107,7 +114,12 @@ def first_body_line(body: str) -> str:
         line = raw.strip()
         if not line:
             continue
-        return _LEADING_MARKUP_RE.sub("", line).strip()
+        cleaned = _LEADING_MARKUP_RE.sub("", line).strip()
+        # A rule ("---"), a frontmatter fence or a bare blockquote marker strips
+        # to nothing. Returning here would blank first_line and silently disable
+        # truncation detection for every note that opens that way.
+        if cleaned:
+            return cleaned
     return ""
 
 
@@ -168,6 +180,8 @@ def find_candidates(conn: sqlite3.Connection, *, limit: int | None = None) -> li
         f"substr(body, 1, {_BODY_HEAD_CHARS}) AS body_head "
         "FROM notes WHERE deleted = 0 ORDER BY updated_time DESC"
     )
+    if limit is not None and limit <= 0:
+        return []
     out: list[TitleCandidate] = []
     for row in conn.execute(sql):
         head = row["body_head"] or ""
