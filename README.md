@@ -120,6 +120,13 @@ This sidecar is designed to be started by the
 [docs/launcher.md](docs/launcher.md) for the exact Command/Arguments/Health-URL
 settings and how to supply tokens (the launcher has no env-var UI).
 
+## Planned: suggested titles and tags
+
+[docs/enrichment.md](docs/enrichment.md) plans two **suggest-only** features —
+proposing titles for notes that lack a useful one, and tags (from your existing
+vocabulary) for notes that have none. Nothing is written back to Joplin: the
+read-only invariants below are unchanged, and the index schema is untouched.
+
 ## Security model
 
 - **Localhost only.** Binds `127.0.0.1` by default; a non-local bind needs
