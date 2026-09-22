@@ -33,6 +33,12 @@ class IndexingStatus(BaseModel):
     last_full_index_at: int | None = None
     last_incremental_index_at: int | None = None
     last_event_id: str | None = None
+    # True while the derived tables (tasks/links/tags/resources) are wiped and not
+    # yet refilled. Expected and transient during a rebuild; if it is set while
+    # rebuild_in_progress is False, a previous rebuild was interrupted and the
+    # views are serving partial data until one finishes.
+    index_incomplete: bool = False
+    rebuild_in_progress: bool = False
 
 
 class RuntimeStatus(BaseModel):
