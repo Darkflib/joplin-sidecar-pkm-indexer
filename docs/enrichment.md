@@ -410,3 +410,77 @@ dashboard view a query rather than a crawl.
 For dead links the Wayback Machine can supply both a title and a snapshot, which
 is a better answer than giving up — but it is another external service, so it
 sits behind the same gate.
+
+### 11.5 Measured rot, and why a status code is not an answer
+
+A one-off header-only pass over the 34 checkable URLs (the 35th carries a live
+API key and was skipped) on 2026-09-22:
+
+| outcome | n |
+|---|---|
+| 2xx | 18 |
+| 404 / 410 | 8 |
+| DNS failure — domain gone entirely | 4 |
+| connection error | 2 |
+| 403 | 1 |
+| 429 | 1 |
+
+**Roughly half of a seven-year-old bookmark set is dead.** That settles whether
+link checking is worth building. It also shows that `2xx` versus everything else
+is the wrong classifier, in both directions:
+
+*Not dead, but counted dead.* The 403 is a Stack Exchange question that certainly
+still exists, and the 429 is rate limiting. Both are bot protection reacting to a
+non-browser client. Reporting those as rotted would be telling you a live page is
+gone, so **403/429/5xx must be a third state — "unknown" — and be retried later**,
+never folded into the dead pile.
+
+*Not alive, but counted alive.* Two `share.google` links resolve 200 to a Google
+search page, and a `news.google.com` topic lands on a consent wall. The content
+is gone; only the redirect target is healthy. A soft-404 check — did we end up on
+a different host, or at a path suspiciously close to `/` — is needed before a 200
+means anything.
+
+*And the slug path is vindicated.* The four DNS failures (`mkbot.cf`,
+`vonhagen.org`, `forensicswiki.org`, `eightballboards.co.uk`) are domains that no
+longer exist. Nothing can be fetched from them at any point in the future, so the
+URL path is the only title source those notes will ever have — which is the
+argument for doing §11.1 first and independently, rather than treating it as the
+fallback for when fetching fails.
+
+### 11.6 Cross-checked in a logged-in browser
+
+Four of the ambiguous results were re-opened manually in a browser carrying a
+Google session, to find out which way the misclassifications actually fell. Both
+predicted error directions were confirmed:
+
+| URL | header-only verdict | truth |
+|---|---|---|
+| `superuser.com/questions/792049/…` | 403, *dead* | **alive** — UA-based bot gating |
+| `share.google/aimode/XwN0…` | 200, *alive* | **dead** — redirects to `share.google/error` |
+| `share.google/crvtpycs…` | 200, *alive* | alive — a shared search for "Stratford Computer Fair" |
+| `news.google.com/topics/CAAq…` | 200 via consent wall | alive — the "United Kingdom" topic feed |
+
+Two of four were wrong, one in each direction. That is the evidentiary basis for
+§11.5's insistence on an "unknown" state and a soft-404 check, rather than a
+plausible-sounding worry.
+
+Two further things fell out, both of which make the *fetch* path more valuable
+than §11.2 assumed:
+
+**Some titles live in the final URL, not the page.** `share.google/crvtpycs…`
+resolves to a search URL carrying `q=Stratford+Computer+Fair`. The human-readable
+title is in a query parameter, so it is recoverable from headers alone — no body,
+nothing interpreted. §11.1's slug parsing should read the **final** URL's query
+string as well as its path.
+
+**Redirects repair Joplin's truncation.** The superuser note's title is the URL
+cut at Joplin's 80-character limit (`…-w-tri-audio-and-s`); the site redirects to
+the full canonical slug (`…-and-subtitles`). So for bookmarks whose URL was itself
+truncated into the title, following redirects recovers slug text that offline
+parsing cannot.
+
+**What this does not change.** The sidecar will never hold a Google session, so
+the `share.google` and `news.google` class stays unrecoverable *by this feature*
+regardless of what a browser can see. Manually resolving them says what those
+notes were; it does not make them automatable.
