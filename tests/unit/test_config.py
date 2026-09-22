@@ -1,9 +1,11 @@
 """Unit tests for configuration loading and precedence (PRD §7)."""
 
+import logging
 from pathlib import Path
 
 import pytest
 
+from pkm_sidecar import config
 from pkm_sidecar.config import (
     AppConfig,
     is_loopback_host,
@@ -12,6 +14,8 @@ from pkm_sidecar.config import (
     require_joplin_token,
 )
 from pkm_sidecar.errors import ConfigError
+
+LOG = logging.getLogger("pkm_sidecar.test")
 
 
 def _load(
@@ -198,3 +202,74 @@ class TestImmutability:
         with pytest.raises(Exception):  # noqa: B017 - pydantic ValidationError on frozen set
             cfg.server.port = 1  # type: ignore[misc]
         assert isinstance(cfg, AppConfig)
+
+
+class TestEnrichmentConfig:
+    def test_disabled_by_default(self, tmp_path: Path) -> None:
+        cfg = _load(tmp_path)
+        assert cfg.enrichment.enabled is False
+        assert cfg.enrichment.title_model == "llama3.1:8b"
+
+    def test_toml_section_is_read(self, tmp_path: Path) -> None:
+        cfg = _load(
+            tmp_path,
+            write_toml='[enrichment]\nenabled = true\nollama_base_url = "http://10.0.0.5:11434"\n'
+            'title_model = "qwen2.5:1.5b"\nmax_tags_per_note = 5\n',
+        )
+        assert cfg.enrichment.enabled is True
+        assert cfg.enrichment.ollama_base_url == "http://10.0.0.5:11434"
+        assert cfg.enrichment.title_model == "qwen2.5:1.5b"
+        assert cfg.enrichment.max_tags_per_note == 5
+
+    def test_env_overrides_toml(self, tmp_path: Path) -> None:
+        cfg = _load(
+            tmp_path,
+            write_toml='[enrichment]\nollama_base_url = "http://from-toml:11434"\n',
+            env={"PKM_SIDECAR_OLLAMA_BASE_URL": "http://from-env:11434"},
+        )
+        assert cfg.enrichment.ollama_base_url == "http://from-env:11434"
+
+    def test_trailing_slash_is_normalised(self, tmp_path: Path) -> None:
+        cfg = _load(tmp_path, write_toml='[enrichment]\nollama_base_url = "http://h:11434/"\n')
+        assert cfg.enrichment.ollama_base_url == "http://h:11434"
+
+    def test_suggestions_db_defaults_beside_the_index(self, tmp_path: Path) -> None:
+        cfg = _load(tmp_path)
+        assert config.suggestions_db_path(cfg) == cfg.database.path.parent / "suggestions.sqlite3"
+
+    def test_suggestions_db_can_be_overridden(self, tmp_path: Path) -> None:
+        cfg = _load(
+            tmp_path, write_toml=f'[enrichment]\ndb_path = "{tmp_path / "elsewhere.sqlite3"}"\n'
+        )
+        assert config.suggestions_db_path(cfg) == tmp_path / "elsewhere.sqlite3"
+
+
+class TestCleartextWarning:
+    def test_warns_for_remote_plain_http(self, tmp_path: Path, caplog) -> None:
+        cfg = _load(
+            tmp_path,
+            write_toml='[enrichment]\nenabled = true\nollama_base_url = "http://192.168.1.9:11434"\n',
+        )
+        with caplog.at_level(logging.WARNING):
+            assert config.warn_if_enrichment_endpoint_is_cleartext(cfg, LOG) is True
+        assert "plain HTTP" in caplog.text
+
+    def test_silent_for_loopback(self, tmp_path: Path) -> None:
+        cfg = _load(
+            tmp_path,
+            write_toml='[enrichment]\nenabled = true\nollama_base_url = "http://127.0.0.1:11434"\n',
+        )
+        assert config.warn_if_enrichment_endpoint_is_cleartext(cfg, LOG) is False
+
+    def test_silent_for_https(self, tmp_path: Path) -> None:
+        cfg = _load(
+            tmp_path,
+            write_toml='[enrichment]\nenabled = true\nollama_base_url = "https://ollama:11434"\n',
+        )
+        assert config.warn_if_enrichment_endpoint_is_cleartext(cfg, LOG) is False
+
+    def test_silent_when_disabled(self, tmp_path: Path) -> None:
+        cfg = _load(
+            tmp_path, write_toml='[enrichment]\nollama_base_url = "http://192.168.1.9:11434"\n'
+        )
+        assert config.warn_if_enrichment_endpoint_is_cleartext(cfg, LOG) is False
