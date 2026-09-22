@@ -371,9 +371,20 @@ the fetcher must:
 
 - allow **only** `http`/`https` — no `file:`, `gopher:`, `data:`
 - resolve DNS first and refuse loopback, private, link-local, CGNAT and
-  multicast addresses, including **`169.254.169.254`**
-- re-run that check on **every redirect hop**, not just the first, or DNS
-  rebinding walks straight through it
+  multicast addresses, including **`169.254.169.254`** — rejecting if *any*
+  returned record is disallowed, not merely the first
+- **connect to the validated address, not the hostname.** Validating a
+  resolution and then handing the *hostname* to the HTTP client leaves two
+  independent lookups: the client resolves again, and a short-TTL record can
+  answer publicly for the check and privately for the connection. Checking
+  again at each redirect does not help, because every hop has the same gap. The
+  validated IP must be pinned into the connection itself, with the original
+  `Host` header and TLS SNI preserved so the request still reaches the right
+  vhost and validates its certificate. In httpx that means resolving, then
+  requesting the IP with `headers={"Host": original}` and
+  `extensions={"sni_hostname": original}` — not passing the hostname and hoping.
+- follow redirects **manually**, running that whole resolve → validate → pin
+  cycle for each hop, rather than letting the client chase them
 - cap redirects, response size and total time; send no cookies, no
   `Authorization`, and refuse URLs carrying credentials
 - **skip URLs whose query string looks like a secret.** One note in this vault is
