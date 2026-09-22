@@ -38,6 +38,11 @@ from pkm_sidecar.logging_config import LogOnceGuard, get_logger, retry_with_back
 # This is a background batch, so the timeout is generous rather than snappy.
 DEFAULT_TIMEOUT = 120.0
 EMBED_TIMEOUT = 60.0
+# Reachability probes must not inherit the generation timeout. A host that
+# accepts the connection and then never answers would otherwise leave the
+# interactive `doctor` command looking hung for two minutes while it asks a
+# question that should take milliseconds.
+PROBE_TIMEOUT = 10.0
 
 _TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     httpx.ConnectError,
@@ -184,7 +189,9 @@ class OllamaClient:
     async def ping(self) -> bool:
         """True if the host answers; never raises, so callers can degrade quietly."""
         try:
-            resp = await self._client.get("/api/tags")
+            resp = await self._client.get(
+                "/api/tags", timeout=httpx.Timeout(PROBE_TIMEOUT, connect=5.0)
+            )
             return 200 <= resp.status_code < 300
         except (httpx.HTTPError, OllamaError) as exc:
             if self._ping_guard.should_log("ollama.unreachable"):
@@ -192,17 +199,44 @@ class OllamaClient:
             return False
 
     async def list_models(self) -> list[str]:
-        """Model names present on the host, for the doctor check."""
+        """Model names present on the host, for the doctor check.
+
+        Every failure here has to arrive as an :class:`OllamaError`. Point the
+        base URL at a generic web server or a misconfigured proxy and the reply is
+        a 200 carrying HTML, or JSON that is not an object — and ``doctor`` only
+        catches ``OllamaError``, so an unwrapped ``ValueError`` would abort the
+        whole run with a traceback instead of reporting one failed check.
+        """
         try:
-            resp = await self._client.get("/api/tags")
+            resp = await self._client.get(
+                "/api/tags", timeout=httpx.Timeout(PROBE_TIMEOUT, connect=5.0)
+            )
         except _TRANSIENT_ERRORS as exc:
             raise OllamaUnreachableError(
                 f"Could not reach the enrichment host: {type(exc).__name__}",
                 url=f"{self._base_url}/api/tags",
             ) from exc
         self._check_status(resp)
-        data = resp.json()
-        return [m["name"] for m in data.get("models", []) if "name" in m]
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise OllamaBadResponseError(
+                "Enrichment host returned a non-JSON model list — is the base URL "
+                "pointing at Ollama?",
+                url=str(resp.request.url),
+            ) from exc
+        if not isinstance(data, dict):
+            raise OllamaBadResponseError(
+                f"Expected a JSON object from /api/tags, got {type(data).__name__}.",
+                url=str(resp.request.url),
+            )
+        models = data.get("models", [])
+        if not isinstance(models, list):
+            raise OllamaBadResponseError(
+                f"Expected a list of models, got {type(models).__name__}.",
+                url=str(resp.request.url),
+            )
+        return [m["name"] for m in models if isinstance(m, dict) and "name" in m]
 
     async def generate(
         self,

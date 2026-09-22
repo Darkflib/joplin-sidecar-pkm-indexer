@@ -152,3 +152,55 @@ class TestEmbed:
         async with _client(lambda r: httpx.Response(200, json={})) as c:
             with pytest.raises(OllamaBadResponseError):
                 await c.embed("bge", ["a"])
+
+
+class TestProbeRobustness:
+    """`doctor` is interactive and catches only OllamaError — both matter here."""
+
+    async def test_probes_do_not_inherit_the_generation_timeout(self) -> None:
+        """A host that accepts then stalls must not hang doctor for two minutes."""
+        seen: list[float | None] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            t = request.extensions.get("timeout") or {}
+            seen.append(t.get("read"))
+            return httpx.Response(200, json={"models": []})
+
+        async with _client(handler) as c:
+            await c.ping()
+            await c.list_models()
+
+        from pkm_sidecar.enrichment.ollama_client import DEFAULT_TIMEOUT, PROBE_TIMEOUT
+
+        assert seen == [PROBE_TIMEOUT, PROBE_TIMEOUT]
+        assert PROBE_TIMEOUT < DEFAULT_TIMEOUT
+
+    async def test_html_model_list_becomes_an_ollama_error(self) -> None:
+        """Base URL pointing at a web server or proxy: a 200 full of HTML."""
+        async with _client(lambda r: httpx.Response(200, text="<html>hello</html>")) as c:
+            with pytest.raises(OllamaBadResponseError) as ei:
+                await c.list_models()
+        assert "non-JSON" in str(ei.value)
+
+    async def test_non_object_json_becomes_an_ollama_error(self) -> None:
+        async with _client(lambda r: httpx.Response(200, json=["not", "an", "object"])) as c:
+            with pytest.raises(OllamaBadResponseError):
+                await c.list_models()
+
+    async def test_models_not_a_list_becomes_an_ollama_error(self) -> None:
+        async with _client(lambda r: httpx.Response(200, json={"models": "nope"})) as c:
+            with pytest.raises(OllamaBadResponseError):
+                await c.list_models()
+
+    async def test_malformed_entries_are_skipped_not_fatal(self) -> None:
+        payload = {"models": [{"name": "llama3.1:8b"}, "junk", {"no_name": 1}]}
+        async with _client(lambda r: httpx.Response(200, json=payload)) as c:
+            assert await c.list_models() == ["llama3.1:8b"]
+
+    async def test_doctor_survives_a_host_that_is_not_ollama(self, tmp_path) -> None:
+        """The whole point: one failed check, not an aborted run."""
+        from pkm_sidecar.errors import OllamaError
+
+        async with _client(lambda r: httpx.Response(200, text="<html/>")) as c:
+            with pytest.raises(OllamaError):  # doctor catches this and reports it
+                await c.list_models()
