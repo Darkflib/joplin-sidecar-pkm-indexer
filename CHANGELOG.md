@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Title candidate detection (step 2 of [docs/enrichment.md](docs/enrichment.md))** —
+  `enrichment.title_candidates`: pure SQL and regex, no model and no network.
+  Flags empty titles, Joplin's own placeholders, bare dates, URLs, filenames, and
+  titles Joplin truncated out of the body's first line. Each candidate carries the
+  rule that selected it, so step 8 can measure precision per rule against real
+  decisions and retire whichever earns its keep least.
+  - Tuned for **precision over recall**: `Standup 2026-01-14` and
+    `Untitled thoughts on RabbitMQ` are left alone, because a confident
+    suggestion on a note whose title was fine erodes trust faster than a
+    mediocre one on a genuinely untitled note.
+  - Truncation is only flagged for a *strict* prefix of a long opening line. A
+    title equal to the first line is not a defect — a note whose opening line is
+    a good heading already has a good title — and a short prefix is coincidence.
+  - Only the first 1000 characters of each body are read: the rules need the
+    opening line, not megabytes of note text.
 - **Enrichment store (step 1 of [docs/enrichment.md](docs/enrichment.md))** — the
   `pkm_sidecar.enrichment` subpackage with `suggestions.sqlite3`, its repository
   and an `[enrichment]` config section. No generation yet, and nothing is written
