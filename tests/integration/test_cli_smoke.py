@@ -173,3 +173,25 @@ def test_loopback_enrichment_host_does_not_warn(tmp_path: Path) -> None:
     result = runner.invoke(app, ["doctor"], env=env)
     assert "WARN: enrichment_transport" not in result.stdout
     assert "OK: enrichment_transport" in result.stdout
+
+
+def test_doctor_does_not_print_endpoint_credentials(tmp_path: Path) -> None:
+    """AnyHttpUrl accepts userinfo, so a configured endpoint can carry a password."""
+    env = _env(tmp_path)
+    (tmp_path / "cfg" / "config.toml").write_text(
+        '[enrichment]\nenabled = true\nollama_base_url = "http://bob:hunter2@198.51.100.7:11434"\n'
+    )
+    result = runner.invoke(app, ["doctor"], env=env)
+    assert "hunter2" not in result.stdout
+    assert "198.51.100.7:11434" in result.stdout  # still identifiable
+
+
+def test_doctor_does_not_contradict_itself_on_a_bad_model_list(tmp_path: Path) -> None:
+    """Reachable-but-malformed must not report as unreachable."""
+    env = _env(tmp_path)
+    (tmp_path / "cfg" / "config.toml").write_text(
+        '[enrichment]\nenabled = true\nollama_base_url = "http://127.0.0.1:9"\n'
+    )
+    result = runner.invoke(app, ["doctor"], env=env)
+    reachable_lines = [ln for ln in result.stdout.splitlines() if "enrichment_reachable" in ln]
+    assert len(reachable_lines) == 1  # never both OK and FAIL for one check

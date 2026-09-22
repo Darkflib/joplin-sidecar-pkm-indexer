@@ -59,6 +59,7 @@ __all__ = [
     "SchemaVersionMismatchError",
     "SecurityError",
     "scrub_token",
+    "scrub_url",
     "to_http_status",
 ]
 
@@ -74,6 +75,25 @@ _TOKEN_QUERY_RE = re.compile(r"(?i)(token=)[^&\s]+")
 def scrub_token(text: str) -> str:
     """Replace any ``token=<value>`` occurrence in *text* with ``token=***``."""
     return _TOKEN_QUERY_RE.sub(r"\1***", text)
+
+
+# `https://user:pass@host` is a valid URL and pydantic's AnyHttpUrl accepts it,
+# so a configured endpoint can carry credentials that doctor would otherwise
+# print straight to the terminal.
+_USERINFO_RE = re.compile(r"(?<=//)[^/@\s]+@")
+_SECRET_QUERY_RE = re.compile(r"(?i)\b(api_?key|secret|password|access_token|auth|key)=[^&\s]+")
+
+
+def scrub_url(text: str) -> str:
+    """Mask credentials in a URL before it is logged, printed or stored.
+
+    Covers userinfo (``//user:pass@``) and secret-looking query parameters as
+    well as ``token=``. Used wherever an endpoint reaches a human — a config
+    value is not automatically safe to echo just because the user supplied it.
+    """
+    scrubbed = _USERINFO_RE.sub("***@", text)
+    scrubbed = _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=***", scrubbed)
+    return scrub_token(scrubbed)
 
 
 # --- base ------------------------------------------------------------------
@@ -205,7 +225,9 @@ class OllamaError(PkmSidecarError):
         self, message: str, *, url: str | None = None, status_code: int | None = None
     ) -> None:
         super().__init__(message)
-        self.url = url
+        # Scrubbed like JoplinError's, so a stack trace or a printed error can
+        # never carry an endpoint's embedded credentials.
+        self.url = scrub_url(url) if url is not None else None
         self.status_code = status_code
 
 

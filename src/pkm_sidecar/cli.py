@@ -37,6 +37,7 @@ from pkm_sidecar.errors import (
     JoplinUnreachableError,
     OllamaError,
     SecurityError,
+    scrub_url,
 )
 from pkm_sidecar.joplin_client import JoplinClient
 from pkm_sidecar.logging_config import configure_logging, get_logger
@@ -425,45 +426,50 @@ async def _run_doctor(cfg: AppConfig) -> list[DoctorResult]:
                     "WARN",
                     "enrichment_transport",
                     f"note bodies cross the network in cleartext to "
-                    f"{cfg.enrichment.ollama_base_url} (unauthenticated API) — "
+                    f"{scrub_url(cfg.enrichment.ollama_base_url)} (unauthenticated API) — "
                     "prefer loopback, an encrypted overlay, or an SSH tunnel",
                 )
             )
         else:
             results.append(DoctorResult("OK", "enrichment_transport", "loopback or HTTPS"))
 
+        endpoint = scrub_url(cfg.enrichment.ollama_base_url)
         ollama = OllamaClient(cfg.enrichment.ollama_base_url)
         try:
-            if not await ollama.ping():
-                results.append(
-                    DoctorResult(
-                        "FAIL",
-                        "enrichment_reachable",
-                        f"no answer from {cfg.enrichment.ollama_base_url}",
-                    )
+            reachable = await ollama.ping()
+            results.append(
+                DoctorResult(
+                    "OK" if reachable else "FAIL",
+                    "enrichment_reachable",
+                    endpoint if reachable else f"no answer from {endpoint}",
                 )
-            else:
-                results.append(
-                    DoctorResult("OK", "enrichment_reachable", cfg.enrichment.ollama_base_url)
-                )
-                present = set(await ollama.list_models())
-                wanted = {
-                    "title": cfg.enrichment.title_model,
-                    "tags": cfg.enrichment.tag_model,
-                    "embedding": cfg.enrichment.embedding_model,
-                }
-                for role, name in wanted.items():
-                    # Ollama reports "llama3.1:8b"; a bare "llama3.1" means :latest.
-                    ok = name in present or f"{name}:latest" in present
+            )
+            if reachable:
+                # Listed separately: a host that answers but returns a malformed
+                # model list is reachable. Reporting that as unreachable would
+                # contradict the line directly above it.
+                try:
+                    present = set(await ollama.list_models())
+                except OllamaError as exc:
                     results.append(
-                        DoctorResult(
-                            "OK" if ok else "FAIL",
-                            f"enrichment_model_{role}",
-                            name if ok else f"{name} not pulled on that host",
-                        )
+                        DoctorResult("FAIL", "enrichment_models", f"{type(exc).__name__}: {exc}")
                     )
-        except OllamaError as exc:
-            results.append(DoctorResult("FAIL", "enrichment_reachable", type(exc).__name__))
+                else:
+                    wanted = {
+                        "title": cfg.enrichment.title_model,
+                        "tags": cfg.enrichment.tag_model,
+                        "embedding": cfg.enrichment.embedding_model,
+                    }
+                    for role, name in wanted.items():
+                        # Ollama reports "llama3.1:8b"; a bare "llama3.1" means :latest.
+                        ok = name in present or f"{name}:latest" in present
+                        results.append(
+                            DoctorResult(
+                                "OK" if ok else "FAIL",
+                                f"enrichment_model_{role}",
+                                name if ok else f"{name} not pulled on that host",
+                            )
+                        )
         finally:
             await ollama.aclose()
 

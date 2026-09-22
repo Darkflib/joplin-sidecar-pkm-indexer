@@ -177,12 +177,22 @@ class OllamaClient:
             ) from exc
         self._check_status(resp, model=model)
         try:
-            data: dict[str, Any] = resp.json()
+            data = resp.json()
         except ValueError as exc:
             raise OllamaBadResponseError(
                 "Enrichment host returned a non-JSON body.", url=str(resp.request.url)
             ) from exc
-        return data
+        # Annotating this as a dict would not make it one: a JSON array or string
+        # root would sail through and only fail later as an AttributeError from
+        # .get(), which is not an OllamaError and so escapes every caller's
+        # handling.
+        if not isinstance(data, dict):
+            raise OllamaBadResponseError(
+                f"Expected a JSON object from {path}, got {type(data).__name__}.",
+                url=str(resp.request.url),
+            )
+        result: dict[str, Any] = data
+        return result
 
     # --- public API --------------------------------------------------------
 
@@ -236,7 +246,7 @@ class OllamaClient:
                 f"Expected a list of models, got {type(models).__name__}.",
                 url=str(resp.request.url),
             )
-        return [m["name"] for m in models if isinstance(m, dict) and "name" in m]
+        return [m["name"] for m in models if isinstance(m, dict) and isinstance(m.get("name"), str)]
 
     async def generate(
         self,
@@ -292,4 +302,20 @@ class OllamaClient:
                 f"Expected {len(inputs)} embeddings, got "
                 f"{len(vectors) if isinstance(vectors, list) else type(vectors).__name__}."
             )
-        return [[float(x) for x in v] for v in vectors]
+        # Shape as well as count. A string where a vector should be would iterate
+        # into characters and fail in float() as a ValueError, which no caller
+        # expects; a corrupt vector must surface as an OllamaError like anything
+        # else from this host.
+        out: list[list[float]] = []
+        for index, vector in enumerate(vectors):
+            if not isinstance(vector, list):
+                raise OllamaBadResponseError(
+                    f"Embedding {index} is {type(vector).__name__}, expected a list."
+                )
+            try:
+                out.append([float(x) for x in vector])
+            except (TypeError, ValueError) as exc:
+                raise OllamaBadResponseError(
+                    f"Embedding {index} contains a non-numeric value."
+                ) from exc
+        return out
