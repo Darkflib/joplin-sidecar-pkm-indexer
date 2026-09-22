@@ -273,3 +273,31 @@ class TestCleartextWarning:
             tmp_path, write_toml='[enrichment]\nollama_base_url = "http://192.168.1.9:11434"\n'
         )
         assert config.warn_if_enrichment_endpoint_is_cleartext(cfg, LOG) is False
+
+
+class TestCleartextWarningScrubbing:
+    def test_the_warning_itself_does_not_leak_credentials(self, tmp_path: Path, caplog) -> None:
+        """The helper renders the endpoint, so it is the helper that must scrub it.
+
+        The DoctorResult was scrubbed first and this was missed, because the
+        warning goes to the log rather than stdout.
+        """
+        cfg = _load(
+            tmp_path,
+            write_toml="[enrichment]\nenabled = true\n"
+            'ollama_base_url = "http://bob:hunter2@198.51.100.7:11434"\n',
+        )
+        with caplog.at_level(logging.WARNING):
+            assert config.warn_if_enrichment_endpoint_is_cleartext(cfg, LOG) is True
+        assert "hunter2" not in caplog.text
+        assert "198.51.100.7:11434" in caplog.text
+
+    def test_secret_query_parameters_are_masked_too(self, tmp_path: Path, caplog) -> None:
+        cfg = _load(
+            tmp_path,
+            write_toml="[enrichment]\nenabled = true\n"
+            'ollama_base_url = "http://198.51.100.7:11434?api_key=topsecret"\n',
+        )
+        with caplog.at_level(logging.WARNING):
+            config.warn_if_enrichment_endpoint_is_cleartext(cfg, LOG)
+        assert "topsecret" not in caplog.text

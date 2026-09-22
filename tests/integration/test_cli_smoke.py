@@ -182,8 +182,11 @@ def test_doctor_does_not_print_endpoint_credentials(tmp_path: Path) -> None:
         '[enrichment]\nenabled = true\nollama_base_url = "http://bob:hunter2@198.51.100.7:11434"\n'
     )
     result = runner.invoke(app, ["doctor"], env=env)
-    assert "hunter2" not in result.stdout
-    assert "198.51.100.7:11434" in result.stdout  # still identifiable
+    # stdout *and* stderr: the cleartext warning is logged, not printed, so a
+    # stdout-only assertion would miss the leak entirely.
+    combined = result.stdout + (result.stderr or "")
+    assert "hunter2" not in combined
+    assert "198.51.100.7:11434" in combined  # still identifiable
 
 
 def test_doctor_does_not_contradict_itself_on_a_bad_model_list(tmp_path: Path) -> None:

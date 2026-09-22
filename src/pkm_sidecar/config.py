@@ -26,7 +26,7 @@ from typing import Any, Literal
 from pydantic import AnyHttpUrl as _AnyHttpUrl
 from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter, field_validator
 
-from pkm_sidecar.errors import ConfigError
+from pkm_sidecar.errors import ConfigError, scrub_url
 
 logger = logging.getLogger("pkm_sidecar.config")
 
@@ -352,11 +352,15 @@ def warn_if_enrichment_endpoint_is_cleartext(cfg: AppConfig, log: logging.Logger
     host = parsed.host or ""
     if parsed.scheme == "https" or is_loopback_host(host):
         return False
+    # Scrubbed *here*, not at the call site: this helper is the one that renders
+    # the endpoint, so leaving it to callers means every future caller has to
+    # remember. AnyHttpUrl accepts userinfo, so the configured value can carry a
+    # password, and the redaction filter only masks secrets registered with it.
     log.warning(
         "Enrichment will send note bodies to %s over plain HTTP to an unauthenticated "
         "API. Prefer loopback, an encrypted overlay (Tailscale/WireGuard), or an SSH "
         "tunnel rather than trusting the local network.",
-        url,
+        scrub_url(url),
     )
     return True
 
