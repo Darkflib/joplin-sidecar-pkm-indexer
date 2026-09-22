@@ -43,7 +43,7 @@ Two measurements that become code:
   Output is post-processed, never trusted to follow the format instruction.
 - The 1.5B model gave a *different and wrong* answer on one note between two
   runs at the same temperature. Generation uses `temperature: 0` and results are
-  cached, so a note is titled once per body revision rather than re-rolled.
+  cached, so a note is titled once per set of inputs (§4) rather than re-rolled.
 
 The 39 min figure is measured on short notes. Prompt evaluation scales with
 input, so long notes cost more; truncation (§5) is what bounds it.
@@ -68,11 +68,22 @@ of topic — and that does not disappear with scale. §6 normalises for it.
 
 The point of suggest-only is that the existing guarantees hold as written:
 
-- `joplin_client.py` stays GET-only. The AST scan in
-  `tests/unit/test_joplin_client_readonly.py` is already scoped to that one file,
-  so it keeps passing unmodified — and will keep passing through the write-back
-  increment, which lands in a *different* module. The indexer therefore remains
-  provably unable to mutate.
+- `joplin_client.py` stays GET-only, and the AST scan in
+  `tests/unit/test_joplin_client_readonly.py` keeps passing unmodified.
+
+  Be precise about what that buys, because an earlier draft of this document
+  overclaimed it. The scan proves **`JoplinClient` is GET-only**. It does not
+  prove that the *indexer* cannot mutate, and once a writer module exists it
+  will not: nothing stops `indexer.py` or an enrichment worker importing it.
+  Scoping the scan to one file preserves a narrow guarantee, it does not
+  preserve the broad one.
+
+  So the broad guarantee needs its own enforcement, added **with** the writer
+  (§9): an import-boundary test asserting that the indexing and enrichment
+  modules never import or reference the writer, and an extension of the
+  integration no-mutation guard — which today exercises only rebuild, sync and
+  reindex — to cover the enrichment flows too. Until that exists, the honest
+  statement is the narrow one.
 - **No index schema change.** Everything new lives in a second database file, so
   the index stays at schema v2 and existing users skip the delete-and-resync that
   a v3 would force. `index rebuild` is unaffected.
@@ -98,18 +109,21 @@ CREATE TABLE suggestions (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     note_id           TEXT NOT NULL,
     kind              TEXT NOT NULL,      -- 'title' | 'tags'
+    input_hash        TEXT NOT NULL,      -- identity: every input, see below
     payload           TEXT NOT NULL,      -- JSON: {"title":...} | {"tags":[...]}
     current_value     TEXT,               -- what it would replace, for review and undo
-    note_body_hash    TEXT NOT NULL,      -- cache key: regenerate only when the body changes
+    note_body_hash    TEXT NOT NULL,      -- component of input_hash, kept for diagnostics
     note_updated_time INTEGER,            -- optimistic-concurrency token for the apply path
+    corpus_revision   TEXT,               -- tags only; drives staleness, not identity
     model             TEXT NOT NULL,
     prompt_version    INTEGER NOT NULL,
     confidence        REAL,
     reason            TEXT,               -- why the note was a candidate
+    stale             INTEGER NOT NULL DEFAULT 0,
     decision          TEXT,               -- NULL | 'accepted' | 'rejected'
     decided_at        INTEGER,
     created_at        INTEGER NOT NULL,
-    UNIQUE(note_id, kind, note_body_hash, prompt_version)
+    UNIQUE(note_id, kind, input_hash)
 );
 
 -- "Leave this note's title alone", distinct from rejecting one suggestion.
@@ -129,9 +143,46 @@ CREATE TABLE note_embeddings (
 );
 ```
 
-The decision lives on the suggestion row, keyed by `body_hash`, so editing a note
-produces a fresh suggestion rather than being suppressed by an old rejection.
-`opt_outs` covers the separate case of "my title is fine, stop asking".
+### Cache identity
+
+`notes.body_hash` is computed from the **body alone** (`repositories._body_hash`).
+Keying on it is wrong in three ways that an earlier draft missed:
+
+- Retitle a note without touching the body and the key is unchanged, so an old
+  rejection suppresses a suggestion that is now applicable again — the exact
+  opposite of the intended behaviour.
+- A title suggestion depends on the *current title* (it is what the suggestion
+  replaces, and what §5 compares against); a tag suggestion depends on the note's
+  *current tags*.
+- `model` was absent entirely, so the optional gpt-oss second pass in §2 could not
+  store a result alongside the llama3.1:8b one for the same body and prompt
+  version. The plan contradicted itself.
+
+So identity is an `input_hash` over everything the suggestion actually depends on:
+
+```
+title:  sha256(body_hash | current_title      | model | prompt_version)
+tags:   sha256(body_hash | sorted(tag_ids)    | model | prompt_version)
+```
+
+The decision lives on the suggestion row and is therefore keyed by that hash: any
+change to a real input yields a new row, undecided, rather than inheriting a
+stale verdict. `opt_outs` covers the separate case of "my title is fine, stop
+asking", which must survive all of it.
+
+### The corpus dependency
+
+Tag suggestions also depend on the tagged-note corpus and its frequency
+weighting (§6), which shift every time *any* note is tagged. That deliberately
+does **not** go in `input_hash`: accepting one suggestion would invalidate every
+other pending one, and the queue would thrash.
+
+Instead `corpus_revision` is recorded alongside, and a row whose recorded
+revision has drifted materially from current is marked `stale` and re-queued —
+while still being served until a replacement exists. Staleness is a signal to
+regenerate, not a reason to hide a suggestion that is probably still right.
+Define the revision coarsely (tagged-note count plus tag-vocabulary size, say)
+so ordinary day-to-day tagging does not trip it.
 
 ## 5. Titles pipeline
 
@@ -221,9 +272,12 @@ than against intuition.
 
 Design implications to preserve now, so the later change is additive:
 
-- Goes in a **new module** with its own client. The AST scan stays pointed at
-  `joplin_client.py`, so "the indexer cannot mutate Joplin" remains true and
-  tested even once a writer exists.
+- Goes in a **new module** with its own client — and ships with the two tests
+  that make the broad guarantee real rather than assumed (§3): an import-boundary
+  scan proving no indexing or enrichment module reaches the writer, and the
+  integration no-mutation guard extended over the enrichment flows. Adding the
+  writer without those would quietly downgrade the invariant to "one client is
+  GET-only".
 - **Optimistic concurrency**: refuse to apply when `note.updated_time` differs
   from `note_updated_time` on the suggestion. This is why that column exists now.
   It prevents clobbering an edit made since the suggestion, and avoids generating
