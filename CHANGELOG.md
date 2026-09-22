@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Title generation (step 4 of [docs/enrichment.md](docs/enrichment.md))** —
+  the slug path, prompt shaping and output cleaning. No worker yet, so nothing
+  runs on its own.
+  - **The offline slug path handles 20 of the vault's 35 URL-titled notes** with
+    no model and no network, and it is the only path that works on a dead link —
+    four of those domains no longer resolve at all. Routing across the whole
+    vault: 87 to the model, 20 to the slug path, 37 skipped for having nothing
+    to work from (down from 56 before the slug path existed).
+  - Slugs are parsed from the URL in the **body**, not the title. Joplin cuts an
+    auto-derived title at 80 characters, so the title's copy is usually a
+    fragment — parsing it produced "…How to Maintain Intense Motiva" and "…Tri
+    Audio and S" across the real vault.
+  - URLs carrying a credential in the query are refused outright: the words are
+    not there anyway, and it keeps a live key out of a suggestion row.
+  - Opaque URLs decline rather than guess. Inventing a title from
+    `share.google/crvtpycs…` is worse than leaving the note for a human.
+  - `clean_title` enforces the format the prompt asks for, because the smaller
+    models ignored "no quotes" in 3 of 5 measured cases: quote stripping, a
+    "Title:" prefix, trailing punctuation, multi-line answers, and rejecting a
+    proposal identical to the title the note already has.
 - **Ollama client (step 3 of [docs/enrichment.md](docs/enrichment.md))** — a
   fenced async client for the enrichment model host, plus `doctor` checks for
   reachability, model presence and transport safety. Nothing calls it yet.
