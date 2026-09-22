@@ -120,7 +120,7 @@ class SuggestionRepository:
         decision = suggestion.decision
         decided_at = suggestion.decided_at
         if decision is None and self.was_payload_rejected(
-            suggestion.note_id, suggestion.kind, suggestion.payload
+            suggestion.note_id, suggestion.kind, suggestion.input_hash, suggestion.payload
         ):
             decision, decided_at = "rejected", _now()
 
@@ -229,12 +229,20 @@ class SuggestionRepository:
         )
 
     def was_payload_rejected(
-        self, note_id: str, kind: SuggestionKind, payload: dict[str, Any]
+        self, note_id: str, kind: SuggestionKind, input_hash: str, payload: dict[str, Any]
     ) -> bool:
+        """Was this exact payload rejected for this *same identity* before?
+
+        Scoped to ``input_hash`` deliberately. Inheritance exists for the
+        corpus-driven re-queue, where generations share an identity and re-asking
+        would nag. A changed body, title, tag set, model or prompt produces a new
+        identity precisely so the question *is* asked again — letting a rejection
+        reach across that would defeat the point of the hash.
+        """
         row = self.conn.execute(
-            "SELECT 1 FROM suggestions WHERE note_id = ? AND kind = ? "
+            "SELECT 1 FROM suggestions WHERE note_id = ? AND kind = ? AND input_hash = ? "
             "AND decision = 'rejected' AND payload = ? LIMIT 1",
-            (note_id, kind, json.dumps(payload, sort_keys=True)),
+            (note_id, kind, input_hash, json.dumps(payload, sort_keys=True)),
         ).fetchone()
         return row is not None
 

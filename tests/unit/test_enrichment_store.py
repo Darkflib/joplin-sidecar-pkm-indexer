@@ -241,3 +241,40 @@ class TestDefaultPath:
         assert edb.default_path(tmp_path / "data" / "index.sqlite3") == (
             tmp_path / "data" / "suggestions.sqlite3"
         )
+
+
+class TestRejectionInheritanceScope:
+    """Inheritance is for corpus re-queues, not a blanket veto on a payload."""
+
+    def test_inherits_across_generations_of_one_identity(self, repo: SuggestionRepository) -> None:
+        with repo.transaction():
+            first = repo.record(_title("n1", "Same Title"))
+            repo.decide(first.id, "rejected")
+            gen = repo.next_generation("n1", "title", first.input_hash)
+            again = repo.record(_title("n1", "Same Title").model_copy(update={"generation": gen}))
+        assert again.decision == "rejected"
+
+    def test_does_not_inherit_after_the_body_changes(self, repo: SuggestionRepository) -> None:
+        """A new identity means the question is asked again — that is the point."""
+        with repo.transaction():
+            first = repo.record(_title("n1", "Same Title", body_hash="bh1"))
+            repo.decide(first.id, "rejected")
+            after_edit = repo.record(_title("n1", "Same Title", body_hash="bh2"))
+
+        assert after_edit.input_hash != first.input_hash
+        assert after_edit.decision is None
+        assert [s.payload["title"] for s in repo.pending("title")] == ["Same Title"]
+
+    def test_does_not_inherit_after_a_model_change(self, repo: SuggestionRepository) -> None:
+        with repo.transaction():
+            first = repo.record(_title("n1", "Same Title", model="llama3.1:8b"))
+            repo.decide(first.id, "rejected")
+            second_pass = repo.record(_title("n1", "Same Title", model="gpt-oss:20b"))
+        assert second_pass.decision is None
+
+    def test_rejection_does_not_leak_between_notes(self, repo: SuggestionRepository) -> None:
+        with repo.transaction():
+            first = repo.record(_title("n1", "Shared Title"))
+            repo.decide(first.id, "rejected")
+            other = repo.record(_title("n2", "Shared Title"))
+        assert other.decision is None
