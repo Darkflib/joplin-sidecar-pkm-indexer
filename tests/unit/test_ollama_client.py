@@ -204,3 +204,58 @@ class TestProbeRobustness:
         async with _client(lambda r: httpx.Response(200, text="<html/>")) as c:
             with pytest.raises(OllamaError):  # doctor catches this and reports it
                 await c.list_models()
+
+
+class TestMalformedShapes:
+    """Every failure from this host must arrive as an OllamaError, not a TypeError."""
+
+    async def test_post_rejects_a_non_object_root(self) -> None:
+        """A JSON array root would reach .get() and raise AttributeError."""
+        async with _client(lambda r: httpx.Response(200, json=["not", "an", "object"])) as c:
+            with pytest.raises(OllamaBadResponseError):
+                await c.generate("m", "p")
+
+    async def test_post_rejects_a_bare_string_root(self) -> None:
+        async with _client(lambda r: httpx.Response(200, json="just a string")) as c:
+            with pytest.raises(OllamaBadResponseError):
+                await c.embed("m", ["a"])
+
+    async def test_non_string_model_names_are_dropped(self) -> None:
+        """doctor builds a set() from this; an unhashable name would raise TypeError."""
+        payload = {"models": [{"name": "good:8b"}, {"name": ["a", "list"]}, {"name": {"k": 1}}]}
+        async with _client(lambda r: httpx.Response(200, json=payload)) as c:
+            names = await c.list_models()
+        assert names == ["good:8b"]
+        assert set(names)  # the thing doctor actually does
+
+    async def test_embedding_that_is_not_a_list_is_rejected(self) -> None:
+        payload = {"embeddings": [[0.1, 0.2], "not-a-vector"]}
+        async with _client(lambda r: httpx.Response(200, json=payload)) as c:
+            with pytest.raises(OllamaBadResponseError) as ei:
+                await c.embed("bge", ["a", "b"])
+        assert "expected a list" in str(ei.value).lower()
+
+    async def test_embedding_with_a_non_numeric_element_is_rejected(self) -> None:
+        payload = {"embeddings": [[0.1, "banana"]]}
+        async with _client(lambda r: httpx.Response(200, json=payload)) as c:
+            with pytest.raises(OllamaBadResponseError) as ei:
+                await c.embed("bge", ["a"])
+        assert "non-numeric" in str(ei.value)
+
+
+class TestUrlScrubbing:
+    def test_error_url_is_scrubbed(self) -> None:
+        from pkm_sidecar.errors import OllamaError
+
+        err = OllamaError("boom", url="https://user:pw@host:11434/api/tags?api_key=secret")
+        assert "pw" not in err.url
+        assert "secret" not in err.url
+        assert "host:11434" in err.url
+
+    def test_scrub_url_cases(self) -> None:
+        from pkm_sidecar.errors import scrub_url
+
+        assert scrub_url("http://192.168.16.62:11434") == "http://192.168.16.62:11434"
+        assert scrub_url("https://u:p@h/x") == "https://***@h/x"
+        assert "***" in scrub_url("http://h/v1?key=abc123")
+        assert "abc123" not in scrub_url("http://h/v1?key=abc123")
