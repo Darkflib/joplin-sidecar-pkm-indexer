@@ -281,11 +281,13 @@ Dashboard: one review column, reusing the existing note-row rendering.
 1. `suggestions.sqlite3` schema, repository, and config block.
 2. Title candidate detection — no model, fully unit-tested.
 3. Ollama client, fenced with `LocalOnlyTransport`; `doctor` check for reachability.
-4. Title generation, post-processing, caching by `body_hash`.
+4. Title generation, post-processing, caching by `body_hash`. Includes the
+   **offline** URL-slug path from §11 — no network, so it lands here.
 5. Embeddings: backfill, storage, kNN with frequency normalisation.
 6. Tag candidates, reranked and vocabulary-constrained.
 7. API and dashboard review column.
 8. Measurement: precision per detection rule against your own decisions.
+9. *(Optional, separately gated)* Link checking and metadata fetch — §11.
 
 Step 8 matters. After a few hundred real accept/reject decisions you have ground
 truth, and the rules in §5 and the weighting in §6 can be tuned against it rather
@@ -324,3 +326,87 @@ Design implications to preserve now, so the later change is additive:
   treat "how many did you get through" as a product metric.
 - **Model drift.** `prompt_version` and `model` are on every row so a change in
   either can be identified and selectively regenerated.
+
+## 11. Bookmark notes and link rot
+
+Running §5 over the real vault turned up 35 notes whose title *is* a URL, and
+**29 of them were created in 2019**. Seven-year-old bookmarks rot, so for many of
+these there is no live page to derive a title from — and for 31 of the 35 the
+body is the bare URL too, so there is no prose either.
+
+Two distinct jobs hide in here, and they deserve different risk budgets.
+
+### 11.1 Slug titles — offline, do this first
+
+Most of these URLs carry their title in the path already:
+
+```
+/install-fail2ban-to-protect-ssh-on-centos-rhel  ->  Install Fail2ban to Protect SSH on CentOS/RHEL
+/the-death-of-disk-hdds-still-have-a-role        ->  The Death of Disk: HDDs Still Have a Role
+```
+
+No network, no model, no risk, and — crucially — **it still works on a dead
+link**, which is exactly the case link rot creates. This belongs in step 4 as a
+deterministic path alongside the model, not as a separate feature.
+
+It does not cover everything. Opaque URLs (`share.google/crvtpycsURVHBBJTg`,
+`youtu.be/gkTBVkYnRWQ`, `news.google.com/topics/CAAq…`) carry no words at all.
+
+### 11.2 Fetching — a genuine expansion of the threat model
+
+Fetching is the only way to title an opaque URL, and a liveness check is a real
+PKM feature in its own right: *which of my bookmarks have died* is worth knowing
+independently of titles. But be clear about what it changes.
+
+This project's stated posture is **no external network access**, enforced by
+`LocalOnlyTransport` refusing anything but the Joplin base. Enrichment already
+added one deliberate, configured exception for Ollama. Fetching URLs taken from
+*note content* is categorically different from both: the destination is chosen by
+data, and note content is not all self-authored — the web clipper puts other
+people's markup in the vault. That is the shape of an SSRF, and this host is a
+k3s node with plenty of interesting things on `10.0.0.0/8`.
+
+So it is opt-in separately from enrichment (`[enrichment.links] enabled`), and
+the fetcher must:
+
+- allow **only** `http`/`https` — no `file:`, `gopher:`, `data:`
+- resolve DNS first and refuse loopback, private, link-local, CGNAT and
+  multicast addresses, including **`169.254.169.254`** — rejecting if *any*
+  returned record is disallowed, not merely the first
+- **connect to the validated address, not the hostname.** Validating a
+  resolution and then handing the *hostname* to the HTTP client leaves two
+  independent lookups: the client resolves again, and a short-TTL record can
+  answer publicly for the check and privately for the connection. Checking
+  again at each redirect does not help, because every hop has the same gap. The
+  validated IP must be pinned into the connection itself, with the original
+  `Host` header and TLS SNI preserved so the request still reaches the right
+  vhost and validates its certificate. In httpx that means resolving, then
+  requesting the IP with `headers={"Host": original}` and
+  `extensions={"sni_hostname": original}` — not passing the hostname and hoping.
+- follow redirects **manually**, running that whole resolve → validate → pin
+  cycle for each hop, rather than letting the client chase them
+- cap redirects, response size and total time; send no cookies, no
+  `Authorization`, and refuse URLs carrying credentials
+- **skip URLs whose query string looks like a secret.** One note in this vault is
+  `api.weatherapi.com/v1/current.json?key=…`. Fetching it would spend a real API
+  key and write it into a third party's logs.
+- rate-limit, and identify itself honestly in the User-Agent
+
+### 11.3 Privacy
+
+A fetch tells each host that you still hold that bookmark, from your address, at
+that moment. For a reading list spanning seven years that is a disclosure worth
+choosing deliberately rather than inheriting from a feature flag — which is the
+other reason §11.2 is gated separately and defaults off.
+
+### 11.4 What to store
+
+Liveness belongs in the index-adjacent store, not in `suggestions`: it is a
+property of the link, not a proposal about a note. A `link_checks` table keyed by
+URL with status, final URL after redirects, fetched title, and checked-at lets
+one check serve every note citing that URL, and makes a "rotted bookmarks"
+dashboard view a query rather than a crawl.
+
+For dead links the Wayback Machine can supply both a title and a snapshot, which
+is a better answer than giving up — but it is another external service, so it
+sits behind the same gate.
