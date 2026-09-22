@@ -410,3 +410,40 @@ dashboard view a query rather than a crawl.
 For dead links the Wayback Machine can supply both a title and a snapshot, which
 is a better answer than giving up — but it is another external service, so it
 sits behind the same gate.
+
+### 11.5 Measured rot, and why a status code is not an answer
+
+A one-off header-only pass over the 34 checkable URLs (the 35th carries a live
+API key and was skipped) on 2026-09-22:
+
+| outcome | n |
+|---|---|
+| 2xx | 18 |
+| 404 / 410 | 8 |
+| DNS failure — domain gone entirely | 4 |
+| connection error | 2 |
+| 403 | 1 |
+| 429 | 1 |
+
+**Roughly half of a seven-year-old bookmark set is dead.** That settles whether
+link checking is worth building. It also shows that `2xx` versus everything else
+is the wrong classifier, in both directions:
+
+*Not dead, but counted dead.* The 403 is a Stack Exchange question that certainly
+still exists, and the 429 is rate limiting. Both are bot protection reacting to a
+non-browser client. Reporting those as rotted would be telling you a live page is
+gone, so **403/429/5xx must be a third state — "unknown" — and be retried later**,
+never folded into the dead pile.
+
+*Not alive, but counted alive.* Two `share.google` links resolve 200 to a Google
+search page, and a `news.google.com` topic lands on a consent wall. The content
+is gone; only the redirect target is healthy. A soft-404 check — did we end up on
+a different host, or at a path suspiciously close to `/` — is needed before a 200
+means anything.
+
+*And the slug path is vindicated.* The four DNS failures (`mkbot.cf`,
+`vonhagen.org`, `forensicswiki.org`, `eightballboards.co.uk`) are domains that no
+longer exist. Nothing can be fetched from them at any point in the future, so the
+URL path is the only title source those notes will ever have — which is the
+argument for doing §11.1 first and independently, rather than treating it as the
+fallback for when fetching fails.
