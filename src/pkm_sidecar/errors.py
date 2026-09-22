@@ -51,6 +51,10 @@ __all__ = [
     "JoplinRateLimitedError",
     "JoplinUnreachableError",
     "NotFoundError",
+    "OllamaBadResponseError",
+    "OllamaError",
+    "OllamaModelNotFoundError",
+    "OllamaUnreachableError",
     "PkmSidecarError",
     "SchemaVersionMismatchError",
     "SecurityError",
@@ -186,6 +190,37 @@ class JoplinBadResponseError(JoplinError):
     """Joplin returned a response that could not be parsed as expected."""
 
 
+# --- Ollama (enrichment) ---------------------------------------------------
+
+
+class OllamaError(PkmSidecarError):
+    """Base for problems talking to the enrichment model host.
+
+    Kept separate from :class:`JoplinError` on purpose: an Ollama outage must
+    degrade enrichment only. Indexing, sync and every read view carry on, so the
+    API layer maps these away from the Joplin codes.
+    """
+
+    def __init__(
+        self, message: str, *, url: str | None = None, status_code: int | None = None
+    ) -> None:
+        super().__init__(message)
+        self.url = url
+        self.status_code = status_code
+
+
+class OllamaUnreachableError(OllamaError):
+    """Connection/timeout failure reaching the model host → HTTP 503."""
+
+
+class OllamaModelNotFoundError(OllamaError):
+    """The configured model is not pulled on that host (Ollama answers 404)."""
+
+
+class OllamaBadResponseError(OllamaError):
+    """The model host answered, but not in a shape we can use."""
+
+
 # --- HTTP status policy ----------------------------------------------------
 
 # Most specific first. :func:`to_http_status` walks the exception's MRO and
@@ -201,6 +236,9 @@ _STATUS_TABLE: tuple[tuple[type[PkmSidecarError], int], ...] = (
     (JoplinUnreachableError, 503),
     (JoplinRateLimitedError, 503),
     (DatabaseLockedError, 503),
+    (OllamaModelNotFoundError, 502),
+    (OllamaUnreachableError, 503),
+    (OllamaError, 502),
 )
 
 

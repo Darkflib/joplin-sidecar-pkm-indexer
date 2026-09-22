@@ -22,13 +22,20 @@ import typer
 import uvicorn
 
 from pkm_sidecar import __version__, db, security
-from pkm_sidecar.config import AppConfig, is_loopback_host, load_config, require_joplin_token
+from pkm_sidecar.config import (
+    AppConfig,
+    is_loopback_host,
+    load_config,
+    require_joplin_token,
+    warn_if_enrichment_endpoint_is_cleartext,
+)
 from pkm_sidecar.errors import (
     ConfigError,
     JoplinAuthError,
     JoplinCursorInvalidError,
     JoplinError,
     JoplinUnreachableError,
+    OllamaError,
     SecurityError,
 )
 from pkm_sidecar.joplin_client import JoplinClient
@@ -328,7 +335,15 @@ def status(
 
 @dataclass
 class DoctorResult:
-    status: Literal["OK", "FAIL", "SKIP"]
+    """One doctor check.
+
+    ``WARN`` is advisory and does **not** affect the exit code: it marks a
+    deliberate trade-off the operator may have chosen knowingly (plain HTTP to a
+    model host on a private network, say) rather than something broken. Only
+    ``FAIL`` means "this will not work, or is unsafe regardless of intent".
+    """
+
+    status: Literal["OK", "WARN", "FAIL", "SKIP"]
     name: str
     message: str
 
@@ -398,6 +413,60 @@ async def _run_doctor(cfg: AppConfig) -> list[DoctorResult]:
         else:
             results.append(DoctorResult("OK", "config_perms", "0600"))
 
+    # Enrichment host, when enrichment is switched on.
+    if not cfg.enrichment.enabled:
+        results.append(DoctorResult("SKIP", "enrichment", "disabled"))
+    else:
+        from pkm_sidecar.enrichment.ollama_client import OllamaClient
+
+        if warn_if_enrichment_endpoint_is_cleartext(cfg, logger):
+            results.append(
+                DoctorResult(
+                    "WARN",
+                    "enrichment_transport",
+                    f"note bodies cross the network in cleartext to "
+                    f"{cfg.enrichment.ollama_base_url} (unauthenticated API) — "
+                    "prefer loopback, an encrypted overlay, or an SSH tunnel",
+                )
+            )
+        else:
+            results.append(DoctorResult("OK", "enrichment_transport", "loopback or HTTPS"))
+
+        ollama = OllamaClient(cfg.enrichment.ollama_base_url)
+        try:
+            if not await ollama.ping():
+                results.append(
+                    DoctorResult(
+                        "FAIL",
+                        "enrichment_reachable",
+                        f"no answer from {cfg.enrichment.ollama_base_url}",
+                    )
+                )
+            else:
+                results.append(
+                    DoctorResult("OK", "enrichment_reachable", cfg.enrichment.ollama_base_url)
+                )
+                present = set(await ollama.list_models())
+                wanted = {
+                    "title": cfg.enrichment.title_model,
+                    "tags": cfg.enrichment.tag_model,
+                    "embedding": cfg.enrichment.embedding_model,
+                }
+                for role, name in wanted.items():
+                    # Ollama reports "llama3.1:8b"; a bare "llama3.1" means :latest.
+                    ok = name in present or f"{name}:latest" in present
+                    results.append(
+                        DoctorResult(
+                            "OK" if ok else "FAIL",
+                            f"enrichment_model_{role}",
+                            name if ok else f"{name} not pulled on that host",
+                        )
+                    )
+        except OllamaError as exc:
+            results.append(DoctorResult("FAIL", "enrichment_reachable", type(exc).__name__))
+        finally:
+            await ollama.aclose()
+
     # Joplin reachability + token validity.
     token = cfg.joplin.token.get_secret_value() if cfg.joplin.token else ""
     client = _make_client(cfg, token)
@@ -435,7 +504,7 @@ def doctor(
     results = _run_async(_run_doctor(cfg))
     any_fail = False
     for r in results:
-        colour = {"OK": "green", "FAIL": "red", "SKIP": "yellow"}[r.status]
+        colour = {"OK": "green", "WARN": "yellow", "FAIL": "red", "SKIP": "yellow"}[r.status]
         typer.secho(f"{r.status}: {r.name} — {r.message}", fg=colour)
         any_fail = any_fail or r.status == "FAIL"
     raise typer.Exit(1 if any_fail else 0)

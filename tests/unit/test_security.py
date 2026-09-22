@@ -12,9 +12,9 @@ from pkm_sidecar import logging_config, security
 from pkm_sidecar.config import AppConfig, load_config
 from pkm_sidecar.errors import AuthError, SecurityError
 from pkm_sidecar.security import (
-    LocalOnlyTransport,
+    SingleOriginTransport,
     assert_non_local_bind_has_token,
-    assert_url_is_joplin_base,
+    assert_url_matches_base,
     constant_time_compare,
     ephemeral_token_file_path,
     generate_ephemeral_token,
@@ -196,19 +196,19 @@ class TestOutboundGuard:
     BASE = "http://127.0.0.1:41184"
 
     def test_assert_allows_matching_base(self) -> None:
-        assert_url_is_joplin_base("http://127.0.0.1:41184/notes?fields=id", self.BASE)
+        assert_url_matches_base("http://127.0.0.1:41184/notes?fields=id", self.BASE)
 
     def test_assert_blocks_foreign_host(self) -> None:
         with pytest.raises(SecurityError):
-            assert_url_is_joplin_base("https://evil.example/steal", self.BASE)
+            assert_url_matches_base("https://evil.example/steal", self.BASE)
 
     def test_assert_blocks_wrong_port(self) -> None:
         with pytest.raises(SecurityError):
-            assert_url_is_joplin_base("http://127.0.0.1:9999/notes", self.BASE)
+            assert_url_matches_base("http://127.0.0.1:9999/notes", self.BASE)
 
     async def test_transport_delegates_for_allowed(self) -> None:
         inner = httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": True}))
-        transport = LocalOnlyTransport(self.BASE, inner)
+        transport = SingleOriginTransport(self.BASE, inner)
         resp = await transport.handle_async_request(
             httpx.Request("GET", "http://127.0.0.1:41184/notes")
         )
@@ -216,7 +216,7 @@ class TestOutboundGuard:
 
     async def test_transport_blocks_foreign(self) -> None:
         inner = httpx.MockTransport(lambda req: httpx.Response(200))
-        transport = LocalOnlyTransport(self.BASE, inner)
+        transport = SingleOriginTransport(self.BASE, inner)
         with pytest.raises(SecurityError):
             await transport.handle_async_request(httpx.Request("GET", "https://evil.example/"))
 

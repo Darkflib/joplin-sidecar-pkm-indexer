@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Ollama client (step 3 of [docs/enrichment.md](docs/enrichment.md))** — a
+  fenced async client for the enrichment model host, plus `doctor` checks for
+  reachability, model presence and transport safety. Nothing calls it yet.
+  - `GenerateResult` keeps `thinking` separate from `response` and flags the
+    case where a reasoning model spends its whole budget before answering.
+    Measured, not hypothetical: `gpt-oss:20b` at `num_predict=24` returns an
+    empty string with a full thinking channel, and `think: false` does not
+    suppress it. Collapsing the fields would have produced silent empty titles.
+  - `embed()` rejects a response whose vector count differs from the input
+    count — silently returning fewer would misalign every nearest-neighbour
+    result with no error.
+  - `generate()` defaults to `temperature: 0`, since a 1.5B model was measured
+    giving a different, wrong answer for the same note between runs at 0.2.
+  - `doctor` gained a **`WARN`** tier that does not affect the exit code, for
+    deliberate trade-offs as distinct from breakage. Plain HTTP to a model host
+    on a private network is the first user of it.
+
+### Changed
+- `LocalOnlyTransport` → `SingleOriginTransport`, and
+  `assert_url_is_joplin_base` → `assert_url_matches_base`. The fence was always
+  generic; it now has a second caller, so the name no longer claims otherwise.
+  Each client owns its own instance, so permitting Ollama does not widen what
+  the Joplin client can reach.
 - **Title candidate detection (step 2 of [docs/enrichment.md](docs/enrichment.md))** —
   `enrichment.title_candidates`: pure SQL and regex, no model and no network.
   Flags empty titles, Joplin's own placeholders, bare dates, URLs, filenames, and
