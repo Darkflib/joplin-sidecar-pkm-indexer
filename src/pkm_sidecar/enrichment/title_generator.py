@@ -163,6 +163,11 @@ _ACRONYMS = frozenset(
     }
 )
 _ID_LIKE_RE = re.compile(r"^(?=.*\d)[A-Za-z0-9_-]{12,}$")
+# base64url ids use - and _, so splitting on delimiters first can shatter one
+# into innocent-looking fragments. Mixed case over a long run is the signal that
+# survives that: "crvtpycsURVHBBJTg" is an id, "install-fail2ban-to-protect-ssh"
+# is a slug. The 12-character floor keeps real CamelCase words ("SparkyLinux").
+_MIXED_CASE_ID_RE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])[A-Za-z0-9_-]{12,}$")
 _HEX_LIKE_RE = re.compile(r"^[0-9a-f]{8,}$", re.IGNORECASE)
 _EXTENSION_RE = re.compile(r"\.(html?|php|aspx?|jsp|shtml?|cgi|json|xml|txt)$", re.IGNORECASE)
 # A URL whose query carries a credential must not be parsed for a title: the
@@ -170,11 +175,32 @@ _EXTENSION_RE = re.compile(r"\.(html?|php|aspx?|jsp|shtml?|cgi|json|xml|txt)$", 
 _CREDENTIAL_QUERY_RE = re.compile(
     r"[?&](key|token|api_?key|secret|password|access_token|auth)=", re.IGNORECASE
 )
-_URL_IN_TEXT_RE = re.compile(r"https?://\S+")
+# Markdown autolinks (`<https://…>`), reference lists and sentences all leave
+# delimiters glued to the URL; none of them belong in the path we parse.
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s<>\]\)]+")
+# A bare domain is a valid title candidate ("www.example.com/x"), but without a
+# scheme it will not match the extractor — and then any unrelated link in the
+# body would win and title the note after a completely different page.
+_BARE_DOMAIN_TITLE_RE = re.compile(r"^(?:www\.)?[\w-]+(?:\.[\w-]+)+(?:/\S*)?$")
 
 
 def _looks_like_id(token: str) -> bool:
-    return bool(_ID_LIKE_RE.match(token) or _HEX_LIKE_RE.match(token))
+    return bool(
+        _ID_LIKE_RE.match(token) or _HEX_LIKE_RE.match(token) or _MIXED_CASE_ID_RE.match(token)
+    )
+
+
+def _fit(title: str) -> str | None:
+    """Trim to the length limit at a word boundary, or decline.
+
+    Slicing mid-word would recreate precisely the defect this feature exists to
+    repair — a title cut off in the middle of a word — and ``clean_title`` would
+    then accept it, because by that point it is within the limit.
+    """
+    if len(title) <= MAX_TITLE_CHARS:
+        return title
+    cut = title[:MAX_TITLE_CHARS].rsplit(" ", 1)[0].rstrip()
+    return cut if len(cut.split()) >= 2 else None
 
 
 def _titlecase(words: list[str]) -> str:
@@ -195,7 +221,15 @@ def _titlecase(words: list[str]) -> str:
 
 
 def _words_from(text: str) -> list[str]:
-    parts = [p for p in re.split(r"[-_+.\s]+", unquote(text)) if p]
+    decoded = unquote(text)
+    # Checked per token, not over the intact segment. Testing the whole segment
+    # was tried and regressed real slugs badly: "install-fail2ban-to-protect-ssh"
+    # contains a digit and is long, so the id rule swallowed it, and requiring
+    # mixed case instead swallowed "SparkyLinux-Xfce-103288". Vault slug coverage
+    # fell from 20 notes to 13. The residual gap is an id whose *fragments* each
+    # read as words ("abc-def_ghi"); catching that costs more real slugs than it
+    # saves, so the per-token mixed-case rule below is where the line sits.
+    parts = [p for p in re.split(r"[-_+.\s]+", decoded) if p]
     return [p for p in parts if not _looks_like_id(p) and not p.isdigit()]
 
 
@@ -208,9 +242,15 @@ def best_url(title: str, body: str = "") -> str | None:
     Motiva", "…Tri Audio and S" — across a real vault. Prefer the body's copy
     whenever it extends the title's.
     """
-    from_title = title.strip() if _URL_IN_TEXT_RE.match(title.strip()) else None
+    stripped = title.strip()
+    if _URL_IN_TEXT_RE.match(stripped):
+        from_title: str | None = stripped
+    elif _BARE_DOMAIN_TITLE_RE.match(stripped):
+        from_title = f"https://{stripped}"  # normalise so comparison can work
+    else:
+        from_title = None
     match = _URL_IN_TEXT_RE.search(body or "")
-    from_body = match.group(0).rstrip(").,") if match else None
+    from_body = match.group(0).rstrip(").,;:") if match else None
     if from_title and from_body:
         return (
             from_body
@@ -243,7 +283,7 @@ def slug_title(url: str) -> str | None:
         for raw in query.get(key, []):
             words = _words_from(raw)
             if len(words) >= 2:
-                return _titlecase(words)[:MAX_TITLE_CHARS]
+                return _fit(_titlecase(words))
 
     segments = [s for s in unquote(parsed.path).split("/") if s]
     for segment in reversed(segments):
@@ -252,7 +292,7 @@ def slug_title(url: str) -> str | None:
             continue
         words = _words_from(cleaned)
         if len(words) >= 2:
-            return _titlecase(words)[:MAX_TITLE_CHARS]
+            return _fit(_titlecase(words))
     return None
 
 

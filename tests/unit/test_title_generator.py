@@ -183,3 +183,59 @@ class TestRouting:
         )
         assert source == "slug"
         assert "Learning Three Js" in title
+
+
+class TestReviewHardening:
+    """Four edge cases from review, each a confident-nonsense risk."""
+
+    def test_markdown_autolink_brackets_are_not_part_of_the_url(self) -> None:
+        """`<https://…>` would otherwise yield a title ending in '>'."""
+        url = best_url("", "see <https://example.com/the-right-story> for detail")
+        assert url == "https://example.com/the-right-story"
+        assert slug_title(url) == "The Right Story"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "ref [1]: https://example.com/the-right-story]",
+            "see https://example.com/the-right-story).",
+            "(https://example.com/the-right-story);",
+        ],
+    )
+    def test_surrounding_punctuation_is_stripped(self, body: str) -> None:
+        assert slug_title(best_url("", body)) == "The Right Story"
+
+    def test_bare_domain_title_is_not_hijacked_by_an_unrelated_body_link(self) -> None:
+        """Without a scheme the title never matched, so any body link won."""
+        url = best_url(
+            "www.example.com/the-real-article",
+            "also see https://other.example/a-completely-different-topic",
+        )
+        assert "other.example" not in url
+        assert slug_title(url) == "The Real Article"
+
+    def test_mixed_case_opaque_ids_are_refused(self) -> None:
+        assert slug_title("https://share.google/crvtpycsURVHBBJTg") is None
+        assert slug_title("https://x.io/XwN0WKClyMFUbFSUO") is None
+
+    def test_camelcase_slugs_still_work(self) -> None:
+        """The id rule must not swallow a real CamelCase path segment."""
+        assert slug_title("https://linux.softpedia.com/get/D/SparkyLinux-Xfce-103288") == (
+            "SparkyLinux Xfce"
+        )
+
+    def test_digit_bearing_slugs_still_work(self) -> None:
+        """'fail2ban' has a digit; an over-eager id rule swallowed this whole slug."""
+        assert slug_title("https://www.tecmint.com/install-fail2ban-to-protect-ssh-on-centos") == (
+            "Install Fail2ban to Protect SSH on Centos"
+        )
+
+    def test_overlong_slug_is_cut_at_a_word_boundary(self) -> None:
+        """Slicing mid-word would recreate the truncation defect being repaired."""
+        title = slug_title("https://x.io/" + "-".join(["verylongwordindeed"] * 9))
+        assert title is not None
+        assert not title.endswith("verylongwordi")  # no severed word
+        assert title.split()[-1] == "Verylongwordindeed"
+
+    def test_overlong_single_word_declines_rather_than_truncating(self) -> None:
+        assert slug_title("https://x.io/" + "a" * 200 + "-b") is None
