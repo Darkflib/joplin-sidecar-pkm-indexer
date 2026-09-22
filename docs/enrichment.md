@@ -447,3 +447,40 @@ longer exist. Nothing can be fetched from them at any point in the future, so th
 URL path is the only title source those notes will ever have — which is the
 argument for doing §11.1 first and independently, rather than treating it as the
 fallback for when fetching fails.
+
+### 11.6 Cross-checked in a logged-in browser
+
+Four of the ambiguous results were re-opened manually in a browser carrying a
+Google session, to find out which way the misclassifications actually fell. Both
+predicted error directions were confirmed:
+
+| URL | header-only verdict | truth |
+|---|---|---|
+| `superuser.com/questions/792049/…` | 403, *dead* | **alive** — UA-based bot gating |
+| `share.google/aimode/XwN0…` | 200, *alive* | **dead** — redirects to `share.google/error` |
+| `share.google/crvtpycs…` | 200, *alive* | alive — a shared search for "Stratford Computer Fair" |
+| `news.google.com/topics/CAAq…` | 200 via consent wall | alive — the "United Kingdom" topic feed |
+
+Two of four were wrong, one in each direction. That is the evidentiary basis for
+§11.5's insistence on an "unknown" state and a soft-404 check, rather than a
+plausible-sounding worry.
+
+Two further things fell out, both of which make the *fetch* path more valuable
+than §11.2 assumed:
+
+**Some titles live in the final URL, not the page.** `share.google/crvtpycs…`
+resolves to a search URL carrying `q=Stratford+Computer+Fair`. The human-readable
+title is in a query parameter, so it is recoverable from headers alone — no body,
+nothing interpreted. §11.1's slug parsing should read the **final** URL's query
+string as well as its path.
+
+**Redirects repair Joplin's truncation.** The superuser note's title is the URL
+cut at Joplin's 80-character limit (`…-w-tri-audio-and-s`); the site redirects to
+the full canonical slug (`…-and-subtitles`). So for bookmarks whose URL was itself
+truncated into the title, following redirects recovers slug text that offline
+parsing cannot.
+
+**What this does not change.** The sidecar will never hold a Google session, so
+the `share.google` and `news.google` class stays unrecoverable *by this feature*
+regardless of what a browser can see. Manually resolving them says what those
+notes were; it does not make them automatable.
