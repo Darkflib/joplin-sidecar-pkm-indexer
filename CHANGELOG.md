@@ -22,6 +22,12 @@ adheres to [Semantic Versioning](https://semver.org/).
     a good heading already has a good title — and a short prefix is coincidence.
   - Only the first 1000 characters of each body are read: the rules need the
     opening line, not megabytes of note text.
+  - Candidates carry a `prose_words` count and a `generatable` flag. Measured
+    against a real 2,240-note vault, **38% of candidates had no prose at all** —
+    bookmarks whose body *is* the URL, and screenshots whose body is one
+    `![name](:/id)` embed. Resource indexing is metadata-only and OCR is out of
+    scope, so a model handed those would invent something confident and wrong.
+    Detection still flags them (they are genuine defects); generation skips them.
 - **Enrichment store (step 1 of [docs/enrichment.md](docs/enrichment.md))** — the
   `pkm_sidecar.enrichment` subpackage with `suggestions.sqlite3`, its repository
   and an `[enrichment]` config section. No generation yet, and nothing is written

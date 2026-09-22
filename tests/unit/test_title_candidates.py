@@ -11,6 +11,7 @@ from pkm_sidecar.enrichment.title_candidates import (
     count_by_issue,
     find_candidates,
     first_body_line,
+    prose_word_count,
 )
 
 
@@ -207,3 +208,50 @@ class TestScan:
             _add(index, "n1", "Untitled", body)
         [c] = find_candidates(index)
         assert c.issue == "joplin_default"
+
+
+class TestGeneratability:
+    """Flagged but untitleable: found by running the rules over a real vault.
+
+    38% of candidates in a 2,240-note vault had no prose — bookmark notes whose
+    body is the URL, and screenshots whose body is one resource embed. A model
+    handed those invents something confident and wrong.
+    """
+
+    def test_screenshot_embed_has_no_prose(self) -> None:
+        body = "![Screenshot_20250426-222044.png](:/fdcb7fa8db794095b3757bd84b401234)"
+        assert prose_word_count(body) == 0
+
+    def test_bare_bookmark_has_no_prose(self) -> None:
+        assert prose_word_count("https://www.tecmint.com/install-fail2ban-to-protect-ssh/") == 0
+
+    def test_prose_is_counted(self) -> None:
+        body = "Spent the morning chasing why the accounting workers were double counting."
+        assert prose_word_count(body) >= 10
+
+    def test_prose_alongside_an_embed_still_counts(self) -> None:
+        body = (
+            "![shot.png](:/fdcb7fa8db794095b3757bd84b401234)\n\n"
+            "This is the diagram William sent over for the reconciliation job design."
+        )
+        assert prose_word_count(body) >= 10
+
+    def test_candidate_marks_untitleable_notes(self, index) -> None:
+        with db.transaction(index):
+            _add(index, "shot", "Screenshot_20250426.png", "![x](:/" + "a" * 32 + ")")
+            _add(
+                index,
+                "prose",
+                "",
+                "Spent the morning chasing why the accounting workers double counted spend.",
+            )
+        found = {c.note_id: c.generatable for c in find_candidates(index)}
+        assert found == {"shot": False, "prose": True}
+
+    def test_still_flagged_even_when_not_generatable(self, index) -> None:
+        """They are real defects; generation skips them, detection does not hide them."""
+        with db.transaction(index):
+            _add(index, "shot", "Screenshot_20250426.png", "![x](:/" + "a" * 32 + ")")
+        [c] = find_candidates(index)
+        assert c.issue == "filename"
+        assert c.generatable is False
