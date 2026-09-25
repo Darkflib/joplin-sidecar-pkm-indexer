@@ -375,6 +375,24 @@ class SuggestionRepository:
             return None
         return list(struct.unpack(f"<{row['dimensions']}f", row["vector"]))
 
+    def get_embedding_any_body(self, note_id: str, *, model: str) -> list[float] | None:
+        """The cached vector for this note and model, whatever body produced it.
+
+        Retrieval compares against whatever is stored; a neighbour embedded from
+        a slightly older body is still a useful neighbour. The strict
+        :meth:`get_embedding` is for deciding whether to *re-embed*, where a
+        stale body must be a miss.
+        """
+        import struct
+
+        row = self.conn.execute(
+            "SELECT dimensions, vector FROM note_embeddings WHERE note_id = ? AND model = ?",
+            (note_id, model),
+        ).fetchone()
+        if row is None:
+            return None
+        return list(struct.unpack(f"<{row['dimensions']}f", row["vector"]))
+
     def embedding_meta(self, note_id: str, *, model: str) -> StoredEmbedding | None:
         row = self.conn.execute(
             "SELECT note_id, model, body_hash, dimensions, created_at FROM note_embeddings "

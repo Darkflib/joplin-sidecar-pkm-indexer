@@ -484,3 +484,48 @@ parsing cannot.
 the `share.google` and `news.google` class stays unrecoverable *by this feature*
 regardless of what a browser can see. Manually resolving them says what those
 notes were; it does not make them automatable.
+
+## 12. Measured: neighbour retrieval cannot work on this vault
+
+Step 5 was built and then evaluated held-out against the real vault, hiding each
+tagged note's tags and asking retrieval to recover them. The result stops step 6
+as designed.
+
+| scoring | top-1 correct | any of top-3 |
+|---|---|---|
+| "always guess the most common tag" | **64%** | — |
+| raw summed similarity | 64% | 78% |
+| frequency-normalised (§6) | 64% | 78% |
+| retrieval on notes *not* carrying that tag | **0%** | 38% |
+
+Both scorings exactly match a **constant predictor**. That is the signature of a
+method learning the majority label and nothing else, and the last row confirms
+it: on the notes where the dominant tag does not apply, top-1 is zero.
+
+The cause is the corpus, not the formula:
+
+- **67 of 2,240 notes are tagged.** Tagging is 3% of the vault.
+- One tag (`404`, evidently a manual dead-bookmark marker) is on **43 of those
+  67** — 64%, which is exactly the constant baseline.
+- 38 tags over 67 notes is **1.8 examples per tag**, and `k=25` neighbours is a
+  third of the entire labelled corpus, so the "neighbourhood" is not local.
+
+The frequency normalisation in §6 was the right countermeasure for the bias
+originally measured, and it is retained and tested — but it cannot rescue a
+corpus this sparse, and honesty about that matters more than shipping it.
+
+### What follows
+
+1. **Do not build neighbour retrieval into the tag path.** It is measurably worse
+   than useless here: it would confidently suggest `404` for everything.
+2. **Give the model the vocabulary directly.** 38 tag names is a hundred tokens
+   of prompt. Closed vocabulary — the original decision — still holds; only the
+   *source of candidates* changes, from neighbours to the tag list itself.
+3. **Retrieval is premature, not wrong.** It becomes viable once accept/reject
+   decisions have built a labelled corpus. The backfill, storage and scoring
+   stay, unused by the tag path for now, and step 8's measurement is what will
+   say when they are worth switching on.
+4. **Be sceptical of the ceiling either way.** A vocabulary where most tags have
+   one to three uses is barely a taxonomy. Suggesting from it may not be worth the
+   review effort, and that is worth deciding before building step 6 rather than
+   after.

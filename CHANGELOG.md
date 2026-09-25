@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Embedding backfill and tag scoring (step 5 of
+  [docs/enrichment.md](docs/enrichment.md))** — batched backfill cached on
+  `(note_id, model, body_hash)`, brute-force cosine kNN, and IDF-normalised tag
+  voting. 2,240 notes embed in about four minutes; a second run is free.
+  - **And the held-out evaluation says the tag path cannot use it.** Both
+    scorings score exactly what a constant predictor scores (64% top-1), and 0%
+    on notes not carrying the dominant tag. Only 67 of 2,240 notes are tagged,
+    one tag covers 43 of them, and that is 1.8 examples per tag. See §12: step 6
+    should prompt the model with the vocabulary directly rather than retrieve
+    neighbours, and the retrieval machinery stays for when decisions have built a
+    corpus worth querying.
 - **Title worker and `pkm-sidecar enrich titles`** — completes step 4 of
   [docs/enrichment.md](docs/enrichment.md). Walks candidates, routes each to the
   URL or the model, and stores suggestions. Still writes nothing to Joplin, and
