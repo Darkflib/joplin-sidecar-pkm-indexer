@@ -42,6 +42,7 @@ EventName = Literal[
     "index.incremental.started",
     "index.incremental.completed",
     "index.incremental.failed",
+    "enrichment.titles.completed",
     "joplin.unreachable",
     "joplin.token_invalid",
     "api.auth_failed",

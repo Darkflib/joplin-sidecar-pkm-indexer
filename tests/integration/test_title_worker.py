@@ -282,3 +282,96 @@ class TestReviewFixes:
             "From Model A",
             "From Model B",
         }
+
+
+class TestActiveIdentity:
+    """A superseded row means the note has no suggestion, not that it is done."""
+
+    async def test_revert_regenerates_because_the_old_row_was_superseded(
+        self, cfg, index, repo
+    ) -> None:
+        """Edit then revert: reachable, and the note was left silently unsuggested.
+
+        A hole opened by supersede_obsolete itself — next_generation counts every
+        row that ever existed, so the reverted identity looked already-done while
+        its only row had been retired.
+        """
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+        async with _client(answer="Original Title") as client:
+            await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+
+        edited = PROSE + " An extra paragraph about the ledger constraint."
+        with db.transaction(index):
+            index.execute(
+                "UPDATE notes SET body = ?, body_hash = 'hash-n1-v2' WHERE id = 'n1'", (edited,)
+            )
+        async with _client(answer="Edited Title") as client:
+            await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+        # The original row is now superseded.
+        assert [p.payload["title"] for p in repo.pending("title")] == ["Edited Title"]
+
+        # Revert: back to the original identity, whose only row is retired.
+        with db.transaction(index):
+            index.execute(
+                "UPDATE notes SET body = ?, body_hash = 'hash-n1' WHERE id = 'n1'", (PROSE,)
+            )
+        async with _client(answer="Regenerated Title") as client:
+            result = await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+
+        assert result.already_suggested == 0  # would have been 1, leaving nothing live
+        assert result.from_model == 1
+        assert [p.payload["title"] for p in repo.pending("title")] == ["Regenerated Title"]
+
+    async def test_a_live_suggestion_still_short_circuits(self, cfg, index, repo) -> None:
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+        calls: list[str] = []
+        async with _client(calls=calls) as client:
+            await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+            again = await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+        assert again.already_suggested == 1
+        assert len(calls) == 1
+
+    async def test_a_decided_suggestion_is_not_re_asked(self, cfg, index, repo) -> None:
+        """Decided but not superseded is still live: the user has ruled on it."""
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+        async with _client() as client:
+            await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+            stored = repo.current_for_note("n1", "title")
+            with repo.transaction():
+                repo.decide(stored.id, "rejected")
+            again = await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+        assert again.already_suggested == 1
+
+
+class TestRunEvent:
+    async def test_the_run_logs_an_enrichment_event_not_an_index_one(
+        self, cfg, index, repo, caplog
+    ) -> None:
+        """An alert on index.full.completed must not count enrichment runs."""
+        import logging
+
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+        with caplog.at_level(logging.INFO):
+            async with _client() as client:
+                await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+        assert "enrichment.titles.completed" in caplog.text
+        assert "index.full" not in caplog.text
+
+    async def test_dry_run_uses_the_same_event_and_says_so(self, cfg, index, repo, caplog) -> None:
+        """The dry-run branch used to report 'started' as the run finished."""
+        import logging
+
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+        with caplog.at_level(logging.INFO):
+            async with _client() as client:
+                await generate_titles(
+                    index_conn=index, repo=repo, cfg=cfg, client=client, dry_run=True
+                )
+        assert "enrichment.titles.completed" in caplog.text
+        assert "dry_run=True" in caplog.text
+        assert "index.full" not in caplog.text

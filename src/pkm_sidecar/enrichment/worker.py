@@ -146,12 +146,15 @@ async def generate_titles(
             # that must move the hash when the prompt or cleaning rules change.
             prompt_version=PROMPT_VERSION,
         )
-        generation = repo.next_generation(candidate.note_id, "title", input_hash)
-        if generation > 1:
-            # Same note, same body, same title, same model, same prompt: the
-            # answer cannot have changed, so do not spend a model call on it.
+        # Same note, same body, same title, same model, same prompt: the answer
+        # cannot have changed, so do not spend a model call on it — but only if
+        # that suggestion still *stands*. A superseded row means the note has none
+        # right now, which happens when a body is edited and then reverted, and
+        # counting it as done would leave the note silently unsuggested.
+        if repo.active_for_identity(candidate.note_id, "title", input_hash) is not None:
             result.already_suggested += 1
             continue
+        generation = repo.next_generation(candidate.note_id, "title", input_hash)
 
         if source == "model":
             if client is None:
@@ -213,8 +216,11 @@ async def generate_titles(
 
     log_event(
         logger,
-        "index.full.completed" if not dry_run else "index.full.started",
-        component="enrichment.titles",
+        # Not an index event. Reusing index.full.completed made every enrich run
+        # look like a completed rebuild to anything filtering on the event name,
+        # and the dry-run branch reported "started" as the run finished.
+        "enrichment.titles.completed",
+        dry_run=dry_run,
         considered=result.considered,
         stored=result.stored,
         slug=result.from_slug,

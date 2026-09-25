@@ -183,6 +183,24 @@ class SuggestionRepository:
         ).fetchone()
         return 1 if row is None or row["g"] is None else int(row["g"]) + 1
 
+    def active_for_identity(
+        self, note_id: str, kind: SuggestionKind, input_hash: str
+    ) -> Suggestion | None:
+        """The live suggestion for this exact identity, if one still stands.
+
+        Distinct from ``next_generation``, which counts every row that ever
+        existed. A superseded row means the note currently has *no* suggestion
+        for that identity, so treating its mere existence as "already done" leaves
+        the note silently unsuggested — reachable whenever a body is edited and
+        then reverted.
+        """
+        row = self.conn.execute(
+            "SELECT * FROM suggestions WHERE note_id = ? AND kind = ? AND input_hash = ? "
+            "AND superseded_by IS NULL ORDER BY generation DESC LIMIT 1",
+            (note_id, kind, input_hash),
+        ).fetchone()
+        return None if row is None else _row_to_suggestion(row)
+
     def supersede(self, old_id: int, new_id: int) -> None:
         """Point a replaced row at its replacement; it stops being offered for review."""
         self.conn.execute("UPDATE suggestions SET superseded_by = ? WHERE id = ?", (new_id, old_id))
