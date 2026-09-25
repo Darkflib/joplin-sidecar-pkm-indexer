@@ -1,6 +1,5 @@
 """Embedding backfill, cosine, and tag scoring (docs/enrichment.md §6)."""
 
-import math
 from pathlib import Path
 
 import httpx
@@ -118,13 +117,29 @@ class TestBackfill:
 
     async def test_changed_body_is_re_embedded(self, cfg, index, repo) -> None:
         with db.transaction(index):
-            _note(index, "n1", "T", "original")
+            _note(index, "n1", "T", "original body text")
         async with _embed_client() as client:
             await backfill_embeddings(index_conn=index, repo=repo, client=client, cfg=cfg)
             with db.transaction(index):
-                index.execute("UPDATE notes SET body_hash = 'hash-n1-v2' WHERE id = 'n1'")
+                index.execute("UPDATE notes SET body = 'a wholly different body' WHERE id = 'n1'")
             again = await backfill_embeddings(index_conn=index, repo=repo, client=client, cfg=cfg)
         assert again.embedded == 1
+
+    async def test_changed_title_is_re_embedded(self, cfg, index, repo) -> None:
+        """The title leads the embedded text, so a retitle must invalidate it.
+
+        Keying on notes.body_hash, which hashes the body alone, left a retitled
+        note with a stale vector for ever while the backfill counted it current.
+        """
+        with db.transaction(index):
+            _note(index, "n1", "Original Title", "body stays the same")
+        async with _embed_client() as client:
+            await backfill_embeddings(index_conn=index, repo=repo, client=client, cfg=cfg)
+            with db.transaction(index):
+                index.execute("UPDATE notes SET title = 'A Completely New Title' WHERE id = 'n1'")
+            again = await backfill_embeddings(index_conn=index, repo=repo, client=client, cfg=cfg)
+        assert again.embedded == 1
+        assert again.cached == 0
 
     async def test_a_failed_batch_is_counted_not_fatal(self, cfg, index, repo) -> None:
         with db.transaction(index):
@@ -157,23 +172,37 @@ class TestScoreTags:
     def test_no_neighbours_no_tags(self) -> None:
         assert score_tags([], {}, titles=TITLES) == []
 
-    def test_a_tag_on_every_neighbour_is_damped(self) -> None:
-        """The measured failure: a ubiquitous tag winning on generic phrasing."""
-        neighbours = [("a", 0.9), ("b", 0.8), ("c", 0.7)]
-        note_tags = {"a": ["t1"], "b": ["t1"], "c": ["t1", "t2"]}
-        scored = {s.tag_id: s.score for s in score_tags(neighbours, note_tags, titles=TITLES)}
-        # t1 has 2.4 raw similarity over 3 neighbours; t2 has 0.7 over 1.
-        # Normalisation must close that gap rather than leaving t1 far ahead.
-        assert scored["t2"] > scored["t1"] * 0.5
+    def test_a_tag_on_every_neighbour_does_not_win_on_volume(self) -> None:
+        """Summing let a ubiquitous tag win; the mean asks the right question.
+
+        Measured on the real vault: summing scored 64% top-1, exactly what a
+        constant predictor scores. The mean scored 76%.
+        """
+        neighbours = [("a", 0.5), ("b", 0.5), ("c", 0.5), ("d", 0.95)]
+        note_tags = {"a": ["t1"], "b": ["t1"], "c": ["t1"], "d": ["t2"]}
+        scored = score_tags(neighbours, note_tags, titles=TITLES)
+        # t1 sums to 1.5 across three weak neighbours; t2 is one close one.
+        assert scored[0].tag_id == "t2"
+
+    def test_score_is_the_mean_not_the_sum(self) -> None:
+        scored = score_tags([("a", 0.8), ("b", 0.4)], {"a": ["t1"], "b": ["t1"]}, titles=TITLES)
+        assert scored[0].score == pytest.approx(0.6)
+
+    def test_frequency_damping_is_deliberately_absent(self) -> None:
+        """IDF was measured and rejected: it cost 9 points of top-1 accuracy."""
+        neighbours = [("a", 0.9), ("b", 0.9)]
+        common = {"a": ["t1"], "b": ["t1"], **{f"x{i}": ["t1"] for i in range(40)}}
+        scored = score_tags(neighbours, common, titles=TITLES)
+        # t1 is on 42 corpus notes; its score is still just the mean similarity.
+        assert scored[0].score == pytest.approx(0.9)
 
     def test_supporters_are_reported(self) -> None:
         scored = score_tags([("a", 0.9), ("b", 0.8)], {"a": ["t1"], "b": ["t1"]}, titles=TITLES)
         assert scored[0].supporters == 2
 
-    def test_idf_weight_matches_the_documented_formula(self) -> None:
-        neighbours = [("a", 1.0), ("b", 1.0)]
-        scored = score_tags(neighbours, {"a": ["t1"]}, titles=TITLES)
-        assert scored[0].score == pytest.approx(1.0 * math.log(1 + 2 / 1))
+    def test_a_single_close_neighbour_scores_its_similarity(self) -> None:
+        scored = score_tags([("a", 1.0), ("b", 1.0)], {"a": ["t1"]}, titles=TITLES)
+        assert scored[0].score == pytest.approx(1.0)
 
     def test_limit_is_honoured(self) -> None:
         neighbours = [("a", 0.9)]

@@ -20,7 +20,7 @@ from pathlib import Path
 from pkm_sidecar.db import get_meta, set_meta
 from pkm_sidecar.errors import SchemaVersionMismatchError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: note_embeddings keys on input_hash, not body_hash
 SCHEMA_VERSION_KEY = "schema.version"
 
 DEFAULT_FILENAME = "suggestions.sqlite3"

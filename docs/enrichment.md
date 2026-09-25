@@ -485,47 +485,58 @@ the `share.google` and `news.google` class stays unrecoverable *by this feature*
 regardless of what a browser can see. Manually resolving them says what those
 notes were; it does not make them automatable.
 
-## 12. Measured: neighbour retrieval cannot work on this vault
+## 12. Measured: aggregation, not tag frequency
 
-Step 5 was built and then evaluated held-out against the real vault, hiding each
-tagged note's tags and asking retrieval to recover them. The result stops step 6
-as designed.
+Step 5 was evaluated held-out against the real vault — hiding each tagged note's
+tags and asking retrieval to recover them. An earlier draft of this section
+concluded that retrieval could not work here and that step 6 should be
+redesigned. **That conclusion was wrong**, and it was wrong because the first
+experiment tested the wrong thing: the IDF weight was computed over the retrieved
+neighbourhood rather than the corpus, so §6's prescribed correction was barely
+applied at all.
 
-| scoring | top-1 correct | any of top-3 |
-|---|---|---|
-| "always guess the most common tag" | **64%** | — |
-| raw summed similarity | 64% | 78% |
-| frequency-normalised (§6) | 64% | 78% |
-| retrieval on notes *not* carrying that tag | **0%** | 38% |
+Corrected, and with the obvious alternative tried alongside:
 
-Both scorings exactly match a **constant predictor**. That is the signature of a
-method learning the majority label and nothing else, and the last row confirms
-it: on the notes where the dominant tag does not apply, top-1 is zero.
+| scoring | top-1 | top-3 | top-1 on notes *without* the dominant tag |
+|---|---|---|---|
+| "always guess the most common tag" | 64% | — | — |
+| sum of similarity | 64% | 78% | **0%** |
+| sum x corpus IDF (as §6 specified) | 64% | 78% | **0%** |
+| **mean similarity** | **76-79%** | **88%** | **42%** |
+| mean x IDF | 70% | 76% | 17% |
+| max similarity | 78% | 88% | 38% |
 
-The cause is the corpus, not the formula:
+**The lever is sum versus mean, not tag frequency.** Summing rewards a tag for
+merely appearing on many neighbours, which on this corpus makes the result
+indistinguishable from a constant predictor — and no per-tag weight fixes that,
+because 25 votes times a 0.94 damping still beats one vote times 4.22. The mean
+asks the question that matters, *how similar are the notes carrying this tag*,
+and beats the baseline by 12-15 points.
 
-- **67 of 2,240 notes are tagged.** Tagging is 3% of the vault.
-- One tag (`404`, evidently a manual dead-bookmark marker) is on **43 of those
-  67** — 64%, which is exactly the constant baseline.
-- 38 tags over 67 notes is **1.8 examples per tag**, and `k=25` neighbours is a
-  third of the entire labelled corpus, so the "neighbourhood" is not local.
+So **§6's frequency normalisation is not implemented**, deliberately: measured, it
+costs nine points of top-1 and more than halves accuracy on the hard cases. Once
+the aggregate is a mean, damping by corpus frequency penalises tags that are
+common because they are genuinely useful.
 
-The frequency normalisation in §6 was the right countermeasure for the bias
-originally measured, and it is retained and tested — but it cannot rescue a
-corpus this sparse, and honesty about that matters more than shipping it.
+### What still stands
 
-### What follows
+Retrieval is viable, so step 6 proceeds as planned — with mean aggregation.
 
-1. **Do not build neighbour retrieval into the tag path.** It is measurably worse
-   than useless here: it would confidently suggest `404` for everything.
-2. **Give the model the vocabulary directly.** 38 tag names is a hundred tokens
-   of prompt. Closed vocabulary — the original decision — still holds; only the
-   *source of candidates* changes, from neighbours to the tag list itself.
-3. **Retrieval is premature, not wrong.** It becomes viable once accept/reject
-   decisions have built a labelled corpus. The backfill, storage and scoring
-   stay, unused by the tag path for now, and step 8's measurement is what will
-   say when they are worth switching on.
-4. **Be sceptical of the ceiling either way.** A vocabulary where most tags have
-   one to three uses is barely a taxonomy. Suggesting from it may not be worth the
-   review effort, and that is worth deciding before building step 6 rather than
-   after.
+The caveats are about the corpus rather than the method, and they bound the
+ceiling:
+
+- **67 of 2,240 notes are tagged** (3%), which is 1.8 examples per tag across 38
+  tags. The headline 76% is measured on a set where one tag (`404`, evidently a
+  manual dead-bookmark marker) covers 64% of the labels, so the honest figure is
+  the **42% top-1 on notes that tag does not apply to**.
+- A vocabulary where most tags have one to three uses is barely a taxonomy.
+  Whether suggesting from it repays the review effort is a judgement call, not a
+  measurement.
+
+### Method note
+
+The first conclusion here was stated confidently on the back of an experiment
+that did not test the thing it claimed to. Both errors — the neighbourhood
+denominator and the untried alternative — came from measuring one hypothesis
+instead of comparing several. Where a scoring choice is load-bearing, compare the
+candidates on real data before drawing a conclusion from any one of them.

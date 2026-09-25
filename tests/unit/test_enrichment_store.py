@@ -200,27 +200,27 @@ class TestCorpusStaleness:
 class TestEmbeddings:
     def test_roundtrip(self, repo: SuggestionRepository) -> None:
         with repo.transaction():
-            repo.put_embedding("n1", model="bge", body_hash="bh", vector=[0.5, -0.25, 0.125])
-        got = repo.get_embedding("n1", model="bge", body_hash="bh")
+            repo.put_embedding("n1", model="bge", input_hash="bh", vector=[0.5, -0.25, 0.125])
+        got = repo.get_embedding("n1", model="bge", input_hash="bh")
         assert got == pytest.approx([0.5, -0.25, 0.125])
 
     def test_model_change_is_a_cache_miss(self, repo: SuggestionRepository) -> None:
         """Vectors from different models are not comparable; reuse would corrupt kNN."""
         with repo.transaction():
-            repo.put_embedding("n1", model="bge", body_hash="bh", vector=[1.0, 0.0])
-        assert repo.get_embedding("n1", model="nomic", body_hash="bh") is None
+            repo.put_embedding("n1", model="bge", input_hash="bh", vector=[1.0, 0.0])
+        assert repo.get_embedding("n1", model="nomic", input_hash="bh") is None
 
     def test_body_change_is_a_cache_miss(self, repo: SuggestionRepository) -> None:
         with repo.transaction():
-            repo.put_embedding("n1", model="bge", body_hash="old", vector=[1.0, 0.0])
-        assert repo.get_embedding("n1", model="bge", body_hash="new") is None
+            repo.put_embedding("n1", model="bge", input_hash="old", vector=[1.0, 0.0])
+        assert repo.get_embedding("n1", model="bge", input_hash="new") is None
 
     def test_two_models_coexist_for_one_note(self, repo: SuggestionRepository) -> None:
         with repo.transaction():
-            repo.put_embedding("n1", model="bge", body_hash="bh", vector=[1.0, 0.0])
-            repo.put_embedding("n1", model="nomic", body_hash="bh", vector=[0.0, 1.0])
-        assert repo.get_embedding("n1", model="bge", body_hash="bh") == pytest.approx([1.0, 0.0])
-        assert repo.get_embedding("n1", model="nomic", body_hash="bh") == pytest.approx([0.0, 1.0])
+            repo.put_embedding("n1", model="bge", input_hash="bh", vector=[1.0, 0.0])
+            repo.put_embedding("n1", model="nomic", input_hash="bh", vector=[0.0, 1.0])
+        assert repo.get_embedding("n1", model="bge", input_hash="bh") == pytest.approx([1.0, 0.0])
+        assert repo.get_embedding("n1", model="nomic", input_hash="bh") == pytest.approx([0.0, 1.0])
         assert repo.count_embeddings(model="bge") == 1
 
 

@@ -41,6 +41,6 @@ class Suggestion(BaseModel):
 class StoredEmbedding(BaseModel):
     note_id: str
     model: str
-    body_hash: str
+    input_hash: str
     dimensions: int
     created_at: int
