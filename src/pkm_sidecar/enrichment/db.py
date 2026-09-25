@@ -14,10 +14,11 @@ never partially upgraded on the way to being refused.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 
-from pkm_sidecar.db import get_meta, set_meta
+from pkm_sidecar.db import get_meta, set_meta, transaction
 from pkm_sidecar.errors import SchemaVersionMismatchError
 
 SCHEMA_VERSION = 2  # v2: note_embeddings keys on input_hash, not body_hash
@@ -33,6 +34,26 @@ def _load_schema_sql() -> str:
 def default_path(index_path: Path) -> Path:
     """Where the store lives: beside the index, so one data directory holds both."""
     return index_path.parent / DEFAULT_FILENAME
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """v2 rekeys ``note_embeddings`` from ``body_hash`` to ``input_hash``.
+
+    Dropped rather than rewritten: the table is *derived*, and refilling it costs
+    a few minutes of embedding. What must not be touched is ``suggestions`` and
+    ``opt_outs``, which hold accept/reject decisions that are not derivable from
+    anything — protecting those is the entire reason this is a separate database
+    from the index. Forcing a whole-file delete to change a derived table would
+    destroy exactly what that separation exists to keep.
+    """
+    with transaction(conn):
+        conn.execute("DROP TABLE IF EXISTS note_embeddings")
+        set_meta(conn, SCHEMA_VERSION_KEY, "2")
+
+
+# from-version -> migration. A version with no entry here is genuinely
+# incompatible and is refused rather than guessed at.
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {1: _migrate_v1_to_v2}
 
 
 def _configure(conn: sqlite3.Connection, *, read_only: bool) -> sqlite3.Connection:
@@ -63,10 +84,11 @@ def _existing_version(conn: sqlite3.Connection) -> str | None:
 
 
 def init_db(path: str | Path) -> None:
-    """Create the store and apply the schema; safe to call repeatedly.
+    """Create the store, migrating it forward where possible; safe to repeat.
 
-    Checks the on-disk version *first*: a database from an incompatible version is
-    refused untouched rather than having this version's tables grafted onto it.
+    Checks the on-disk version *before* touching the schema, so an unrecognised
+    database is refused untouched rather than having this version's tables grafted
+    onto it on the way out.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -74,11 +96,20 @@ def init_db(path: str | Path) -> None:
     try:
         existing = _existing_version(conn)
         if existing is not None and existing != str(SCHEMA_VERSION):
-            raise SchemaVersionMismatchError(
-                f"Enrichment store at {path} is schema version {existing}, "
-                f"but this build supports {SCHEMA_VERSION}. Delete the file to rebuild "
-                "it — suggestions regenerate, but any accept/reject decisions are lost."
-            )
+            try:
+                from_version = int(existing)
+            except ValueError:
+                from_version = -1
+            migration = _MIGRATIONS.get(from_version)
+            if migration is None:
+                raise SchemaVersionMismatchError(
+                    f"Enrichment store at {path} is schema version {existing}, and this "
+                    f"build supports {SCHEMA_VERSION} with no migration from it. Delete "
+                    "the file to rebuild — suggestions regenerate, but accept/reject "
+                    "decisions are lost."
+                )
+            migration(conn)
+        # Recreates anything a migration dropped; idempotent otherwise.
         conn.executescript(_load_schema_sql())
         if existing is None:
             set_meta(conn, SCHEMA_VERSION_KEY, str(SCHEMA_VERSION))

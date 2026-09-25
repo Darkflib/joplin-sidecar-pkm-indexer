@@ -113,6 +113,13 @@ derived and regenerable, but **your accept/reject decisions are not**, and the
 documented schema-upgrade path for the index is "delete the file". Non-derived
 state must not live somewhere designed to be disposable.
 
+Which means this store cannot borrow that upgrade path either. Its schema changes
+**migrate in place** where the change is confined to derived data — v1→v2 rekeyed
+`note_embeddings` and simply drops it, costing a few minutes of re-embedding while
+`suggestions` and `opt_outs` survive untouched. A version with no migration is
+refused rather than guessed at. Forcing a whole-file delete to change a derived
+table would destroy precisely what separating the databases was for.
+
 ```sql
 CREATE TABLE suggestions (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
