@@ -341,24 +341,24 @@ class SuggestionRepository:
     # --- embeddings --------------------------------------------------------
 
     def put_embedding(
-        self, note_id: str, *, model: str, body_hash: str, vector: Sequence[float]
+        self, note_id: str, *, model: str, input_hash: str, vector: Sequence[float]
     ) -> None:
         import struct
 
         blob = struct.pack(f"<{len(vector)}f", *vector)
         self.conn.execute(
             """
-            INSERT INTO note_embeddings(note_id, model, body_hash, dimensions, vector, created_at)
+            INSERT INTO note_embeddings(note_id, model, input_hash, dimensions, vector, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(note_id, model) DO UPDATE SET
-                body_hash=excluded.body_hash, dimensions=excluded.dimensions,
+                input_hash=excluded.input_hash, dimensions=excluded.dimensions,
                 vector=excluded.vector, created_at=excluded.created_at
             """,
-            (note_id, model, body_hash, len(vector), blob, _now()),
+            (note_id, model, input_hash, len(vector), blob, _now()),
         )
 
-    def get_embedding(self, note_id: str, *, model: str, body_hash: str) -> list[float] | None:
-        """Return the cached vector only if *both* model and body_hash still match.
+    def get_embedding(self, note_id: str, *, model: str, input_hash: str) -> list[float] | None:
+        """Return the cached vector only if *both* model and input_hash still match.
 
         Vectors from different embedding models are not comparable, so reusing one
         across a model change would corrupt every nearest-neighbour result without
@@ -367,17 +367,35 @@ class SuggestionRepository:
         import struct
 
         row = self.conn.execute(
-            "SELECT body_hash, dimensions, vector FROM note_embeddings "
+            "SELECT input_hash, dimensions, vector FROM note_embeddings "
             "WHERE note_id = ? AND model = ?",
             (note_id, model),
         ).fetchone()
-        if row is None or row["body_hash"] != body_hash:
+        if row is None or row["input_hash"] != input_hash:
+            return None
+        return list(struct.unpack(f"<{row['dimensions']}f", row["vector"]))
+
+    def get_embedding_any_input(self, note_id: str, *, model: str) -> list[float] | None:
+        """The cached vector for this note and model, whatever text produced it.
+
+        Retrieval compares against whatever is stored; a neighbour embedded from
+        slightly older text is still a useful neighbour. The strict
+        :meth:`get_embedding` is for deciding whether to *re-embed*, where stale
+        input must be a miss.
+        """
+        import struct
+
+        row = self.conn.execute(
+            "SELECT dimensions, vector FROM note_embeddings WHERE note_id = ? AND model = ?",
+            (note_id, model),
+        ).fetchone()
+        if row is None:
             return None
         return list(struct.unpack(f"<{row['dimensions']}f", row["vector"]))
 
     def embedding_meta(self, note_id: str, *, model: str) -> StoredEmbedding | None:
         row = self.conn.execute(
-            "SELECT note_id, model, body_hash, dimensions, created_at FROM note_embeddings "
+            "SELECT note_id, model, input_hash, dimensions, created_at FROM note_embeddings "
             "WHERE note_id = ? AND model = ?",
             (note_id, model),
         ).fetchone()

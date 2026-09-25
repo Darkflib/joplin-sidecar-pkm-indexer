@@ -53,13 +53,17 @@ CREATE TABLE IF NOT EXISTS opt_outs (
 
 -- Derived, but kept here so the index schema stays at v2 and existing users are
 -- spared a delete-and-resync. Keyed by model as well as note: vectors from
--- different embedding models are not comparable, so a body-only lookup after an
--- embedding_model change would silently mix spaces and corrupt every
--- nearest-neighbour result. Reuse requires body_hash AND model to match.
+-- different embedding models are not comparable, so a lookup that ignored the
+-- model after an embedding_model change would silently mix spaces and corrupt
+-- every nearest-neighbour result.
+--
+-- input_hash covers the text actually embedded — title *and* body. Keying on
+-- notes.body_hash was wrong because that hashes the body alone, so retitling a
+-- note left its vector stale for ever while the backfill skipped it as current.
 CREATE TABLE IF NOT EXISTS note_embeddings (
     note_id    TEXT NOT NULL,
     model      TEXT NOT NULL,
-    body_hash  TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
     dimensions INTEGER NOT NULL,
     vector     BLOB NOT NULL,
     created_at INTEGER NOT NULL,

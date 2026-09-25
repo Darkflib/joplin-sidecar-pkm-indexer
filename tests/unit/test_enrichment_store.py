@@ -200,27 +200,27 @@ class TestCorpusStaleness:
 class TestEmbeddings:
     def test_roundtrip(self, repo: SuggestionRepository) -> None:
         with repo.transaction():
-            repo.put_embedding("n1", model="bge", body_hash="bh", vector=[0.5, -0.25, 0.125])
-        got = repo.get_embedding("n1", model="bge", body_hash="bh")
+            repo.put_embedding("n1", model="bge", input_hash="bh", vector=[0.5, -0.25, 0.125])
+        got = repo.get_embedding("n1", model="bge", input_hash="bh")
         assert got == pytest.approx([0.5, -0.25, 0.125])
 
     def test_model_change_is_a_cache_miss(self, repo: SuggestionRepository) -> None:
         """Vectors from different models are not comparable; reuse would corrupt kNN."""
         with repo.transaction():
-            repo.put_embedding("n1", model="bge", body_hash="bh", vector=[1.0, 0.0])
-        assert repo.get_embedding("n1", model="nomic", body_hash="bh") is None
+            repo.put_embedding("n1", model="bge", input_hash="bh", vector=[1.0, 0.0])
+        assert repo.get_embedding("n1", model="nomic", input_hash="bh") is None
 
     def test_body_change_is_a_cache_miss(self, repo: SuggestionRepository) -> None:
         with repo.transaction():
-            repo.put_embedding("n1", model="bge", body_hash="old", vector=[1.0, 0.0])
-        assert repo.get_embedding("n1", model="bge", body_hash="new") is None
+            repo.put_embedding("n1", model="bge", input_hash="old", vector=[1.0, 0.0])
+        assert repo.get_embedding("n1", model="bge", input_hash="new") is None
 
     def test_two_models_coexist_for_one_note(self, repo: SuggestionRepository) -> None:
         with repo.transaction():
-            repo.put_embedding("n1", model="bge", body_hash="bh", vector=[1.0, 0.0])
-            repo.put_embedding("n1", model="nomic", body_hash="bh", vector=[0.0, 1.0])
-        assert repo.get_embedding("n1", model="bge", body_hash="bh") == pytest.approx([1.0, 0.0])
-        assert repo.get_embedding("n1", model="nomic", body_hash="bh") == pytest.approx([0.0, 1.0])
+            repo.put_embedding("n1", model="bge", input_hash="bh", vector=[1.0, 0.0])
+            repo.put_embedding("n1", model="nomic", input_hash="bh", vector=[0.0, 1.0])
+        assert repo.get_embedding("n1", model="bge", input_hash="bh") == pytest.approx([1.0, 0.0])
+        assert repo.get_embedding("n1", model="nomic", input_hash="bh") == pytest.approx([0.0, 1.0])
         assert repo.count_embeddings(model="bge") == 1
 
 
@@ -307,3 +307,96 @@ class TestRejectionInheritanceScope:
             repo.decide(first.id, "rejected")
             other = repo.record(_title("n2", "Shared Title"))
         assert other.decision is None
+
+
+class TestMigrations:
+    """A derived-table change must not cost the decisions this store exists to keep."""
+
+    @staticmethod
+    def _make_v1_store(path: Path) -> None:
+        """A v1 store: note_embeddings keyed on body_hash, plus real decisions."""
+        import sqlite3
+
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO meta VALUES ('schema.version', '1');
+            CREATE TABLE suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, note_id TEXT NOT NULL,
+                kind TEXT NOT NULL, input_hash TEXT NOT NULL, payload TEXT NOT NULL,
+                current_value TEXT, note_body_hash TEXT NOT NULL, note_updated_time INTEGER,
+                corpus_revision TEXT, model TEXT NOT NULL, prompt_version INTEGER NOT NULL,
+                confidence REAL, reason TEXT, stale INTEGER NOT NULL DEFAULT 0,
+                generation INTEGER NOT NULL DEFAULT 1, superseded_by INTEGER,
+                decision TEXT, decided_at INTEGER, created_at INTEGER NOT NULL,
+                UNIQUE(note_id, kind, input_hash, generation));
+            CREATE TABLE opt_outs (
+                note_id TEXT NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL,
+                PRIMARY KEY (note_id, kind));
+            CREATE TABLE note_embeddings (
+                note_id TEXT NOT NULL, model TEXT NOT NULL, body_hash TEXT NOT NULL,
+                dimensions INTEGER NOT NULL, vector BLOB NOT NULL, created_at INTEGER NOT NULL,
+                PRIMARY KEY (note_id, model));
+            INSERT INTO suggestions(note_id, kind, input_hash, payload, note_body_hash,
+                model, prompt_version, decision, decided_at, created_at)
+            VALUES ('n1', 'title', 'ih1', '{"title": "Kept"}', 'bh', 'm', 1,
+                    'rejected', 5, 5);
+            INSERT INTO opt_outs VALUES ('n2', 'title', 7);
+            INSERT INTO note_embeddings VALUES ('n1', 'bge', 'bh', 2, X'0000', 9);
+        """)
+        conn.commit()
+        conn.close()
+
+    def test_v1_migrates_in_place_and_keeps_decisions(self, tmp_path: Path) -> None:
+        path = tmp_path / "suggestions.sqlite3"
+        self._make_v1_store(path)
+
+        edb.init_db(path)  # must not raise, and must not wipe the file
+
+        conn = edb.open_connection(path)
+        try:
+            assert edb.get_meta(conn, edb.SCHEMA_VERSION_KEY) == "2"
+            repo = SuggestionRepository(conn)
+            kept = repo.current_for_note("n1", "title")
+            assert kept is not None
+            assert kept.payload == {"title": "Kept"}
+            assert kept.decision == "rejected"  # the thing that is not derivable
+            assert repo.is_opted_out("n2", "title") is True
+            # The derived table is rebuilt on the new key and starts empty.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(note_embeddings)")}
+            assert "input_hash" in cols
+            assert "body_hash" not in cols
+            assert conn.execute("SELECT count(*) FROM note_embeddings").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+    def test_migration_is_idempotent(self, tmp_path: Path) -> None:
+        path = tmp_path / "suggestions.sqlite3"
+        self._make_v1_store(path)
+        edb.init_db(path)
+        edb.init_db(path)
+        conn = edb.open_connection(path)
+        try:
+            assert SuggestionRepository(conn).current_for_note("n1", "title") is not None
+        finally:
+            conn.close()
+
+    def test_an_unknown_version_is_still_refused(self, tmp_path: Path) -> None:
+        """No migration path means refuse, not guess."""
+        import sqlite3
+
+        from pkm_sidecar.errors import SchemaVersionMismatchError
+
+        path = tmp_path / "suggestions.sqlite3"
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT INTO meta VALUES ('schema.version', '99')")
+        conn.commit()
+        conn.close()
+
+        with pytest.raises(SchemaVersionMismatchError):
+            edb.init_db(path)
+        check = sqlite3.connect(path)
+        tables = {r[0] for r in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        check.close()
+        assert tables == {"meta"}  # untouched on the way out

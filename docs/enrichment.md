@@ -113,6 +113,13 @@ derived and regenerable, but **your accept/reject decisions are not**, and the
 documented schema-upgrade path for the index is "delete the file". Non-derived
 state must not live somewhere designed to be disposable.
 
+Which means this store cannot borrow that upgrade path either. Its schema changes
+**migrate in place** where the change is confined to derived data — v1→v2 rekeyed
+`note_embeddings` and simply drops it, costing a few minutes of re-embedding while
+`suggestions` and `opt_outs` survive untouched. A version with no migration is
+refused rather than guessed at. Forcing a whole-file delete to change a derived
+table would destroy precisely what separating the databases was for.
+
 ```sql
 CREATE TABLE suggestions (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -484,3 +491,59 @@ parsing cannot.
 the `share.google` and `news.google` class stays unrecoverable *by this feature*
 regardless of what a browser can see. Manually resolving them says what those
 notes were; it does not make them automatable.
+
+## 12. Measured: aggregation, not tag frequency
+
+Step 5 was evaluated held-out against the real vault — hiding each tagged note's
+tags and asking retrieval to recover them. An earlier draft of this section
+concluded that retrieval could not work here and that step 6 should be
+redesigned. **That conclusion was wrong**, and it was wrong because the first
+experiment tested the wrong thing: the IDF weight was computed over the retrieved
+neighbourhood rather than the corpus, so §6's prescribed correction was barely
+applied at all.
+
+Corrected, and with the obvious alternative tried alongside:
+
+| scoring | top-1 | top-3 | top-1 on notes *without* the dominant tag |
+|---|---|---|---|
+| "always guess the most common tag" | 64% | — | — |
+| sum of similarity | 64% | 78% | **0%** |
+| sum x corpus IDF (as §6 specified) | 64% | 78% | **0%** |
+| **mean similarity** | **76-79%** | **88%** | **42%** |
+| mean x IDF | 70% | 76% | 17% |
+| max similarity | 78% | 88% | 38% |
+
+**The lever is sum versus mean, not tag frequency.** Summing rewards a tag for
+merely appearing on many neighbours, which on this corpus makes the result
+indistinguishable from a constant predictor — and no per-tag weight fixes that,
+because 25 votes times a 0.94 damping still beats one vote times 4.22. The mean
+asks the question that matters, *how similar are the notes carrying this tag*,
+and beats the baseline by 12-15 points.
+
+So **§6's frequency normalisation is not implemented**, deliberately: measured, it
+costs nine points of top-1 and more than halves accuracy on the hard cases. Once
+the aggregate is a mean, damping by corpus frequency penalises tags that are
+common because they are genuinely useful.
+
+### What still stands
+
+Retrieval is viable, so step 6 proceeds as planned — with mean aggregation.
+
+The caveats are about the corpus rather than the method, and they bound the
+ceiling:
+
+- **67 of 2,240 notes are tagged** (3%), which is 1.8 examples per tag across 38
+  tags. The headline 76% is measured on a set where one tag (`404`, evidently a
+  manual dead-bookmark marker) covers 64% of the labels, so the honest figure is
+  the **42% top-1 on notes that tag does not apply to**.
+- A vocabulary where most tags have one to three uses is barely a taxonomy.
+  Whether suggesting from it repays the review effort is a judgement call, not a
+  measurement.
+
+### Method note
+
+The first conclusion here was stated confidently on the back of an experiment
+that did not test the thing it claimed to. Both errors — the neighbourhood
+denominator and the untried alternative — came from measuring one hypothesis
+instead of comparing several. Where a scoring choice is load-bearing, compare the
+candidates on real data before drawing a conclusion from any one of them.

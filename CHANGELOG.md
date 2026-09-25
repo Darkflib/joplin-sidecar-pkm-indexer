@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Embedding backfill and tag scoring (step 5 of
+  [docs/enrichment.md](docs/enrichment.md))** — batched backfill cached on the
+  hash of the text actually embedded, brute-force cosine kNN, and mean-similarity
+  tag ranking. 2,240 notes embed in about four minutes; a second run is free.
+  - The store migrates **in place** from v1 to v2 rather than demanding a delete:
+    the change is confined to the derived `note_embeddings` table, so it is
+    dropped and refilled while accept/reject decisions survive. Requiring a
+    whole-file delete for a derived-table change would have destroyed exactly what
+    keeping this database separate from the index was for.
+  - Scoring is **mean** similarity, not the sum-times-IDF §6 prescribed.
+    Measured held-out against the real vault: summing scores 64% top-1, exactly
+    what a constant predictor scores, while the mean scores 76-79%. Applying IDF
+    on top of the mean *costs* nine points. §12 has the full comparison.
 - **Title worker and `pkm-sidecar enrich titles`** — completes step 4 of
   [docs/enrichment.md](docs/enrichment.md). Walks candidates, routes each to the
   URL or the model, and stores suggestions. Still writes nothing to Joplin, and
