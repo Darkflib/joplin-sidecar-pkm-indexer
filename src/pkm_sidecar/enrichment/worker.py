@@ -48,6 +48,7 @@ class TitleRunResult:
     from_slug: int = 0
     from_model: int = 0
     rejected: int = 0
+    superseded: int = 0
     failed: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -141,6 +142,9 @@ async def generate_titles(
             body_hash=candidate.body_hash,
             current_state=candidate.title,
             model=model,
+            # Explicit: this is the *title* prompt's version, which is the one
+            # that must move the hash when the prompt or cleaning rules change.
+            prompt_version=PROMPT_VERSION,
         )
         generation = repo.next_generation(candidate.note_id, "title", input_hash)
         if generation > 1:
@@ -160,6 +164,18 @@ async def generate_titles(
                 result.failed += 1
                 result.errors.append(f"{candidate.note_id}: {type(exc).__name__}")
                 continue
+            if completion.spent_budget_thinking:
+                # A reasoning model answered with nothing because its whole
+                # budget went on thinking. Counting that as "rejected" would
+                # report a clean exit while every model-backed note silently
+                # produced nothing, and would hide the actual cause.
+                result.failed += 1
+                result.errors.append(
+                    f"{candidate.note_id}: {model} spent its whole token budget "
+                    "reasoning and returned no title — raise num_predict or use a "
+                    "non-reasoning model"
+                )
+                continue
             proposed = clean_title(completion.response, current_title=candidate.title)
 
         if not proposed:
@@ -168,7 +184,7 @@ async def generate_titles(
 
         if not dry_run:
             with repo.transaction():
-                repo.record(
+                stored = repo.record(
                     _suggestion_for(
                         candidate,
                         title=proposed,
@@ -178,6 +194,18 @@ async def generate_titles(
                         generation=generation,
                     )
                 )
+                # An edited or retitled note gets a new identity rather than a new
+                # generation, so its previous pending row would otherwise linger
+                # and review would offer two suggestions for one note. Same
+                # transaction, so the queue is never briefly inconsistent.
+                if stored.id is not None:
+                    result.superseded += repo.supersede_obsolete(
+                        candidate.note_id,
+                        "title",
+                        replacement_id=stored.id,
+                        body_hash=candidate.body_hash,
+                        current_value={"title": candidate.title},
+                    )
         if source == "slug":
             result.from_slug += 1
         else:

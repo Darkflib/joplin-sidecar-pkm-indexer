@@ -194,3 +194,91 @@ class TestCachingAndGuards:
         stored = repo.current_for_note("n1", "title")
         assert stored.note_updated_time == 4242  # optimistic-concurrency token
         assert stored.note_body_hash == "hash-n1"
+
+
+class TestReviewFixes:
+    """Three findings from review, each one a silent wrong answer."""
+
+    async def test_prompt_version_bump_regenerates(self, cfg, index, repo, monkeypatch) -> None:
+        """A bump must move the hash, or nothing ever regenerates.
+
+        The version used to come from a different module's constant than the one
+        the worker stored, so bumping the prompt changed the recorded version and
+        left the cache key untouched.
+        """
+        from pkm_sidecar.enrichment import worker as worker_mod
+
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+        calls: list[str] = []
+        async with _client(calls=calls) as client:
+            await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+            assert len(calls) == 1
+
+            monkeypatch.setattr(worker_mod, "PROMPT_VERSION", 2)
+            after = await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+
+        assert after.already_suggested == 0  # not treated as cached
+        assert after.from_model == 1
+        assert len(calls) == 2
+
+    async def test_exhausted_reasoning_budget_is_a_failure_not_a_rejection(
+        self, cfg, index, repo
+    ) -> None:
+        """An empty answer because the budget went on thinking has a cause worth naming."""
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"response": "", "thinking": "We need a short title..."}
+            )
+
+        client = OllamaClient(
+            "http://127.0.0.1:11434", transport=httpx.MockTransport(handler), max_retries=0
+        )
+        async with client:
+            result = await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+
+        assert result.failed == 1
+        assert result.rejected == 0  # would have exited 0 with no explanation
+        assert any("reasoning" in e for e in result.errors)
+
+    async def test_an_edited_note_supersedes_its_stale_suggestion(self, cfg, index, repo) -> None:
+        """Otherwise review offers two suggestions for one note."""
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+        async with _client(answer="First Suggestion") as client:
+            await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+
+        # The note is edited but still untitled, so it is still a candidate.
+        with db.transaction(index):
+            index.execute(
+                "UPDATE notes SET body = ?, body_hash = 'hash-n1-v2' WHERE id = 'n1'",
+                (PROSE + " And a further paragraph about the ledger constraint.",),
+            )
+        async with _client(answer="Second Suggestion") as client:
+            result = await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+
+        assert result.superseded == 1
+        pending = repo.pending("title")
+        assert [p.payload["title"] for p in pending] == ["Second Suggestion"]
+
+    async def test_a_parallel_model_pass_is_not_superseded(self, cfg, index, repo) -> None:
+        """Same body and title, different model: a deliberate second opinion."""
+        with db.transaction(index):
+            _note(index, "n1", "", PROSE)
+        async with _client(answer="From Model A") as client:
+            await generate_titles(index_conn=index, repo=repo, cfg=cfg, client=client)
+
+        other = cfg.model_copy(
+            update={"enrichment": cfg.enrichment.model_copy(update={"title_model": "other:20b"})}
+        )
+        async with _client(answer="From Model B") as client:
+            result = await generate_titles(index_conn=index, repo=repo, cfg=other, client=client)
+
+        assert result.superseded == 0
+        assert {p.payload["title"] for p in repo.pending("title")} == {
+            "From Model A",
+            "From Model B",
+        }
