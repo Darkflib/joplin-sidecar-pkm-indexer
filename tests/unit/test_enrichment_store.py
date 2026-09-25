@@ -8,6 +8,10 @@ from pkm_sidecar.enrichment import db as edb
 from pkm_sidecar.enrichment.models import Suggestion
 from pkm_sidecar.enrichment.repository import SuggestionRepository, compute_input_hash
 
+# The title prompt's version, passed explicitly — as every real caller now must,
+# since a shared default silently diverged from what the worker stored.
+PV = 1
+
 
 @pytest.fixture
 def repo(tmp_path: Path):
@@ -27,30 +31,44 @@ def _title(note_id: str, title: str, *, body_hash: str = "bh1", model: str = "m1
             body_hash=body_hash,
             current_state=kw.pop("current_title", ""),
             model=model,
+            prompt_version=PV,
         ),
         payload={"title": title},
         note_body_hash=body_hash,
         model=model,
+        prompt_version=PV,
         **kw,
     )
 
 
 class TestInputHash:
     def test_body_change_changes_identity(self) -> None:
-        a = compute_input_hash(kind="title", body_hash="a", current_state="T", model="m")
-        b = compute_input_hash(kind="title", body_hash="b", current_state="T", model="m")
+        a = compute_input_hash(
+            kind="title", body_hash="a", current_state="T", model="m", prompt_version=PV
+        )
+        b = compute_input_hash(
+            kind="title", body_hash="b", current_state="T", model="m", prompt_version=PV
+        )
         assert a != b
 
     def test_retitle_changes_identity(self) -> None:
         """The defect this exists to prevent: body_hash alone misses a retitle."""
-        a = compute_input_hash(kind="title", body_hash="same", current_state="Old", model="m")
-        b = compute_input_hash(kind="title", body_hash="same", current_state="New", model="m")
+        a = compute_input_hash(
+            kind="title", body_hash="same", current_state="Old", model="m", prompt_version=PV
+        )
+        b = compute_input_hash(
+            kind="title", body_hash="same", current_state="New", model="m", prompt_version=PV
+        )
         assert a != b
 
     def test_model_change_changes_identity(self) -> None:
         """Without this the documented second-pass model could not store a row."""
-        a = compute_input_hash(kind="title", body_hash="x", current_state="T", model="llama3.1:8b")
-        b = compute_input_hash(kind="title", body_hash="x", current_state="T", model="gpt-oss:20b")
+        a = compute_input_hash(
+            kind="title", body_hash="x", current_state="T", model="llama3.1:8b", prompt_version=PV
+        )
+        b = compute_input_hash(
+            kind="title", body_hash="x", current_state="T", model="gpt-oss:20b", prompt_version=PV
+        )
         assert a != b
 
     def test_prompt_version_changes_identity(self) -> None:
@@ -63,13 +81,21 @@ class TestInputHash:
         assert a != b
 
     def test_tag_order_does_not_matter(self) -> None:
-        a = compute_input_hash(kind="tags", body_hash="x", current_state=["b", "a"], model="m")
-        b = compute_input_hash(kind="tags", body_hash="x", current_state=["a", "b"], model="m")
+        a = compute_input_hash(
+            kind="tags", body_hash="x", current_state=["b", "a"], model="m", prompt_version=PV
+        )
+        b = compute_input_hash(
+            kind="tags", body_hash="x", current_state=["a", "b"], model="m", prompt_version=PV
+        )
         assert a == b
 
     def test_kind_separates_identities(self) -> None:
-        a = compute_input_hash(kind="title", body_hash="x", current_state="", model="m")
-        b = compute_input_hash(kind="tags", body_hash="x", current_state="", model="m")
+        a = compute_input_hash(
+            kind="title", body_hash="x", current_state="", model="m", prompt_version=PV
+        )
+        b = compute_input_hash(
+            kind="tags", body_hash="x", current_state="", model="m", prompt_version=PV
+        )
         assert a != b
 
 
@@ -152,10 +178,13 @@ class TestCorpusStaleness:
         s = Suggestion(
             note_id="n1",
             kind="tags",
-            input_hash=compute_input_hash(kind="tags", body_hash="bh", current_state=[], model="m"),
+            input_hash=compute_input_hash(
+                kind="tags", body_hash="bh", current_state=[], model="m", prompt_version=PV
+            ),
             payload={"tags": ["t1"]},
             note_body_hash="bh",
             model="m",
+            prompt_version=PV,
             corpus_revision="rev-1",
         )
         with repo.transaction():

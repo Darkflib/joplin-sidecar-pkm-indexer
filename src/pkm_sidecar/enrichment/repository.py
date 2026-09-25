@@ -26,7 +26,6 @@ from typing import Any
 
 from pkm_sidecar import db as index_db
 from pkm_sidecar.enrichment.models import (
-    PROMPT_VERSION,
     DecisionValue,
     StoredEmbedding,
     Suggestion,
@@ -42,7 +41,7 @@ def compute_input_hash(
     body_hash: str,
     current_state: str | Sequence[str] | None,
     model: str,
-    prompt_version: int = PROMPT_VERSION,
+    prompt_version: int,
 ) -> str:
     """Hash everything that can change the right answer for a note.
 
@@ -53,6 +52,12 @@ def compute_input_hash(
     The tag *corpus* is deliberately absent: folding it in would mean accepting
     one suggestion invalidates every other pending one. Corpus drift is handled
     by :meth:`SuggestionRepository.mark_stale_for_corpus` instead.
+
+    *prompt_version* has no default. It used to, and the default pointed at a
+    constant in this package while callers stored a different one from their own
+    module — so bumping the prompt changed the recorded version but not the hash,
+    and every cached suggestion was reported as already-done and never
+    regenerated. Requiring it makes that divergence impossible to reintroduce.
     """
     if current_state is None:
         state = ""
@@ -178,9 +183,58 @@ class SuggestionRepository:
         ).fetchone()
         return 1 if row is None or row["g"] is None else int(row["g"]) + 1
 
+    def active_for_identity(
+        self, note_id: str, kind: SuggestionKind, input_hash: str
+    ) -> Suggestion | None:
+        """The live suggestion for this exact identity, if one still stands.
+
+        Distinct from ``next_generation``, which counts every row that ever
+        existed. A superseded row means the note currently has *no* suggestion
+        for that identity, so treating its mere existence as "already done" leaves
+        the note silently unsuggested — reachable whenever a body is edited and
+        then reverted.
+        """
+        row = self.conn.execute(
+            "SELECT * FROM suggestions WHERE note_id = ? AND kind = ? AND input_hash = ? "
+            "AND superseded_by IS NULL ORDER BY generation DESC LIMIT 1",
+            (note_id, kind, input_hash),
+        ).fetchone()
+        return None if row is None else _row_to_suggestion(row)
+
     def supersede(self, old_id: int, new_id: int) -> None:
         """Point a replaced row at its replacement; it stops being offered for review."""
         self.conn.execute("UPDATE suggestions SET superseded_by = ? WHERE id = ?", (new_id, old_id))
+
+    def supersede_obsolete(
+        self,
+        note_id: str,
+        kind: SuggestionKind,
+        *,
+        replacement_id: int,
+        body_hash: str,
+        current_value: dict[str, Any] | None,
+    ) -> int:
+        """Retire pending rows built from note state that has since changed.
+
+        When a still-defective note is edited or retitled its ``input_hash``
+        moves, so the replacement is a *new* identity rather than a new
+        generation — and the old row stays pending, leaving review to offer two
+        suggestions for one note.
+
+        Matched on the recorded note state rather than on ``input_hash``, because
+        ``input_hash`` also folds in the model: a deliberate second-model pass
+        over the *same* body and title must survive this, and it does.
+        """
+        serialised = (
+            json.dumps(current_value, sort_keys=True) if current_value is not None else None
+        )
+        return self.conn.execute(
+            "UPDATE suggestions SET superseded_by = ? "
+            "WHERE note_id = ? AND kind = ? AND id != ? AND superseded_by IS NULL "
+            "AND decision IS NULL "
+            "AND (note_body_hash != ? OR COALESCE(current_value, '') != COALESCE(?, ''))",
+            (replacement_id, note_id, kind, replacement_id, body_hash, serialised),
+        ).rowcount
 
     def find_by_identity(
         self, note_id: str, kind: SuggestionKind, input_hash: str, generation: int

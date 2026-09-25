@@ -9,10 +9,6 @@ from pydantic import BaseModel
 SuggestionKind = Literal["title", "tags"]
 DecisionValue = Literal["accepted", "rejected"]
 
-# Bumped when a prompt changes in a way that should invalidate cached output.
-# Part of input_hash, so a bump regenerates rather than colliding.
-PROMPT_VERSION = 1
-
 
 class Suggestion(BaseModel):
     """One generated suggestion, at one generation, for one note."""
@@ -27,7 +23,11 @@ class Suggestion(BaseModel):
     note_updated_time: int | None = None
     corpus_revision: str | None = None
     model: str
-    prompt_version: int = PROMPT_VERSION
+    # No default on purpose. Prompt versions are per-kind (a title prompt and a
+    # tag prompt change independently), and a shared default here silently
+    # diverged from the one the worker stored — a bump then changed the recorded
+    # version without changing input_hash, so nothing regenerated.
+    prompt_version: int
     confidence: float | None = None
     reason: str | None = None
     stale: bool = False

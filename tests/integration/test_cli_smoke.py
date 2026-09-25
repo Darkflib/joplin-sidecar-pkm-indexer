@@ -198,3 +198,10 @@ def test_doctor_does_not_contradict_itself_on_a_bad_model_list(tmp_path: Path) -
     result = runner.invoke(app, ["doctor"], env=env)
     reachable_lines = [ln for ln in result.stdout.splitlines() if "enrichment_reachable" in ln]
     assert len(reachable_lines) == 1  # never both OK and FAIL for one check
+
+
+def test_enrich_titles_refuses_when_disabled(tmp_path: Path) -> None:
+    """Sending note bodies to a model host is opt-in, not a default."""
+    result = runner.invoke(app, ["enrich", "titles"], env=_env(tmp_path))
+    assert result.exit_code == 2
+    assert "opt in" in result.stderr

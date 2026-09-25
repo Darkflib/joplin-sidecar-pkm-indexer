@@ -27,6 +27,7 @@ from pkm_sidecar.config import (
     is_loopback_host,
     load_config,
     require_joplin_token,
+    suggestions_db_path,
     warn_if_enrichment_endpoint_is_cleartext,
 )
 from pkm_sidecar.errors import (
@@ -58,8 +59,10 @@ app = typer.Typer(
     epilog=_EPILOG,
 )
 index_app = typer.Typer(help="Index management.", no_args_is_help=True)
+enrich_app = typer.Typer(help="Suggested titles and tags (opt-in).", no_args_is_help=True)
 db_app = typer.Typer(help="Database utilities.", no_args_is_help=True)
 app.add_typer(index_app, name="index")
+app.add_typer(enrich_app, name="enrich")
 app.add_typer(db_app, name="db")
 
 
@@ -542,6 +545,71 @@ def open_dashboard(
     url = f"http://{cfg.server.host}:{cfg.server.port}/#token={token}"
     webbrowser.open(url)
     typer.echo("Opening dashboard in your browser…")  # never print the token-bearing URL
+
+
+# --- enrich ----------------------------------------------------------------
+
+
+async def _do_enrich_titles(cfg: AppConfig, limit: int | None, dry_run: bool) -> int:
+    from pkm_sidecar.enrichment import db as edb
+    from pkm_sidecar.enrichment.ollama_client import OllamaClient
+    from pkm_sidecar.enrichment.repository import SuggestionRepository
+    from pkm_sidecar.enrichment.worker import generate_titles
+
+    warn_if_enrichment_endpoint_is_cleartext(cfg, logger)
+    store_path = suggestions_db_path(cfg)
+    edb.init_db(store_path)
+    index = db.open_reader_connection(cfg.database.path)
+    store = edb.open_connection(store_path)
+    client = OllamaClient(cfg.enrichment.ollama_base_url)
+    try:
+        result = await generate_titles(
+            index_conn=index,
+            repo=SuggestionRepository(store),
+            cfg=cfg,
+            client=client,
+            limit=limit,
+            dry_run=dry_run,
+        )
+    finally:
+        await client.aclose()
+        store.close()
+        index.close()
+
+    typer.echo(
+        f"{'Would store' if dry_run else 'Stored'} {result.stored} "
+        f"({result.from_slug} from the URL, {result.from_model} from the model)"
+    )
+    typer.echo(
+        f"  considered {result.considered} · nothing to work from "
+        f"{result.nothing_to_work_from} · already suggested {result.already_suggested} "
+        f"· rejected {result.rejected} · opted out {result.opted_out}"
+    )
+    if result.failed:
+        typer.secho(f"  {result.failed} failed", fg="red", err=True)
+        for line in result.errors[:5]:
+            typer.secho(f"    {line}", fg="red", err=True)
+    return 4 if result.failed else 0
+
+
+@enrich_app.command("titles")
+def enrich_titles(
+    config: str | None = typer.Option(None, "--config"),
+    db_path: str | None = typer.Option(None, "--db"),
+    limit: int | None = typer.Option(None, "--limit", help="Only consider this many candidates."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Generate but store nothing."),
+) -> None:
+    """Propose titles for notes that need one. Writes nothing to Joplin."""
+    cfg = _prepare(config=config, db_path=db_path)
+    if not cfg.enrichment.enabled:
+        typer.secho(
+            "Enrichment is disabled. Set [enrichment] enabled = true to opt in — "
+            "note bodies will be sent to the configured model host.",
+            fg="yellow",
+            err=True,
+        )
+        raise typer.Exit(2)
+    raise typer.Exit(_run_async(_do_enrich_titles(cfg, limit, dry_run)))
 
 
 # --- db path ---------------------------------------------------------------
