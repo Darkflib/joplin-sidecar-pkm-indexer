@@ -292,7 +292,10 @@ Dashboard: one review column, reusing the existing note-row rendering.
    **offline** URL-slug path from §11 — no network, so it lands here.
 5. Embeddings: backfill, storage, kNN with frequency normalisation.
 6. Tag candidates, reranked and vocabulary-constrained.
-7. API and dashboard review column.
+7. API and dashboard review column. `POST /api/enrich/run` is **not** included:
+   the designed workflow is an overnight batch via `pkm-sidecar enrich titles`
+   followed by review in the morning, so a trigger endpoint would add a
+   background-task handle for no benefit the CLI does not already give.
 8. Measurement: precision per detection rule against your own decisions.
 9. *(Optional, separately gated)* Link checking and metadata fetch — §11.
 

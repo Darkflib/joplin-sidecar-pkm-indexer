@@ -332,3 +332,28 @@ main {
   color: var(--warn);
   font-size: 0.85rem;
 }
+
+/* Suggestion review. The proposed title leads because that is what is being
+   judged; the old one is context, not the subject. */
+.suggestion {
+  display: block;
+}
+.suggestion-proposed {
+  font-weight: 600;
+}
+.suggestion-current {
+  opacity: 0.65;
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.suggestion-actions {
+  display: flex;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+.suggestion-actions button {
+  font-size: 0.8em;
+  padding: 0.15rem 0.5rem;
+}

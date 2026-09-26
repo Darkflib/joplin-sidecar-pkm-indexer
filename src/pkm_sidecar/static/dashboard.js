@@ -158,6 +158,87 @@ function fillError(id, message) {
   ul.appendChild(err);
 }
 
+// ---------- suggestion review ----------
+
+// Accepting records a decision and writes NOTHING to Joplin, so the buttons are
+// safe to click. Kept explicit in the UI text for the same reason.
+function suggestionRow(s) {
+  const item = document.createElement("li");
+  item.className = "note-item suggestion";
+
+  const proposed = document.createElement("div");
+  proposed.className = "suggestion-proposed";
+  proposed.textContent = s.proposed.title || JSON.stringify(s.proposed);
+  item.appendChild(proposed);
+
+  const was = document.createElement("div");
+  was.className = "suggestion-current";
+  const current = (s.current && s.current.title) || "";
+  was.textContent = current ? `was: ${current}` : "was: (no title)";
+  was.title = current;
+  item.appendChild(was);
+
+  const meta = document.createElement("div");
+  meta.className = "note-meta";
+  const why = document.createElement("span");
+  why.textContent = s.reason ? s.reason.replace(/_/g, " ") : "";
+  why.title = `from ${s.model}`;
+  meta.appendChild(why);
+  const open = document.createElement("a");
+  open.className = "note-open";
+  open.href = "joplin://x-callback-url/openNote?id=" + encodeURIComponent(s.note_id);
+  open.textContent = "open ↗";
+  open.title = "Open in Joplin to apply it yourself";
+  meta.appendChild(open);
+  item.appendChild(meta);
+
+  const actions = document.createElement("div");
+  actions.className = "suggestion-actions";
+  for (const [label, path, hint] of [
+    ["Accept", "accept", "Record that this title is right (nothing is written to Joplin)"],
+    ["Reject", "reject", "Not this title — ask again if the note changes"],
+    ["Never", "dismiss", "Stop suggesting titles for this note"],
+  ]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.title = hint;
+    button.addEventListener("click", async () => {
+      actions.querySelectorAll("button").forEach((b) => (b.disabled = true));
+      try {
+        await api(`/api/suggestions/${s.id}/${path}`, { method: "POST" });
+        item.remove();
+        loadSuggestions().catch(() => {});
+      } catch (err) {
+        actions.querySelectorAll("button").forEach((b) => (b.disabled = false));
+      }
+    });
+    actions.appendChild(button);
+  }
+  item.appendChild(actions);
+  return item;
+}
+
+async function loadSuggestions() {
+  const column = document.getElementById("col-suggestions");
+  let items;
+  try {
+    items = await api("/api/suggestions?kind=title&limit=50");
+  } catch (err) {
+    if (err.message === "unauthorized") throw err;
+    // Show the failure rather than hiding the column: hidden is indistinguishable
+    // from "nothing to review", which would quietly conceal a real fault.
+    column.hidden = false;
+    fillError("suggestions", "Failed to load");
+    return;
+  }
+  column.hidden = items.length === 0;
+  const ul = document.getElementById("suggestions");
+  ul.innerHTML = "";
+  document.getElementById("count-suggestions").textContent = items.length;
+  items.forEach((s) => ul.appendChild(suggestionRow(s)));
+}
+
 // ---------- status / counts ----------
 
 async function loadStatus() {
@@ -213,6 +294,7 @@ async function loadAll() {
   document.getElementById("paste-banner").hidden = true;
   await loadStatus();
   await Promise.all([
+    loadSuggestions(),
     loadColumn("recent", "/api/notes/recent"),
     loadColumn("inbox", "/api/notes/inbox"),
     loadColumn("untagged", "/api/notes/untagged"),

@@ -15,14 +15,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pkm_sidecar import __version__, db
 from pkm_sidecar.api_models import (
     DatabaseStatus,
+    DecisionResponse,
+    EnrichmentStatus,
     GraphResponse,
     IndexingStatus,
     JoplinStatus,
     NoteDetail,
     RuntimeStatus,
     StatusResponse,
+    SuggestionResponse,
 )
-from pkm_sidecar.errors import NotFoundError, scrub_token
+from pkm_sidecar.enrichment import db as enrichment_db
+from pkm_sidecar.enrichment.models import DecisionValue, Suggestion
+from pkm_sidecar.enrichment.repository import SuggestionRepository
+from pkm_sidecar.errors import ConflictError, NotFoundError, scrub_token
 from pkm_sidecar.models import ExtractedLink, ExtractedTask, NoteSummary, ResourceRow, SearchHit
 from pkm_sidecar.repositories import NoteRepository
 from pkm_sidecar.security import verify_bearer_token
@@ -38,6 +44,39 @@ async def require_bearer(request: Request) -> None:
 
 
 router = APIRouter(prefix="/api", dependencies=[Depends(require_bearer)])
+
+
+def get_suggestions(request: Request) -> Iterator[SuggestionRepository | None]:
+    """Per-request enrichment store, or None when the feature is off.
+
+    None rather than an error: the review endpoints then answer "nothing to
+    review", which is true and lets the dashboard hide its column without
+    special-casing a failure.
+    """
+    path = getattr(request.app.state, "suggestions_path", None)
+    if path is None:
+        yield None
+        return
+    conn = enrichment_db.open_connection(path)
+    try:
+        yield SuggestionRepository(conn)
+    finally:
+        conn.close()
+
+
+def _to_response(suggestion: Suggestion) -> SuggestionResponse:
+    return SuggestionResponse(
+        id=suggestion.id or 0,
+        note_id=suggestion.note_id,
+        kind=suggestion.kind,
+        proposed=suggestion.payload,
+        current=suggestion.current_value,
+        reason=suggestion.reason,
+        confidence=suggestion.confidence,
+        model=suggestion.model,
+        stale=suggestion.stale,
+        created_at=suggestion.created_at,
+    )
 
 
 def get_repo(request: Request) -> Iterator[NoteRepository]:
@@ -106,7 +145,24 @@ async def get_status(request: Request) -> StatusResponse:
             rebuild_in_progress=indexer.rebuild_in_progress,
         ),
         runtime=RuntimeStatus(launched_by=os.environ.get("JOPLIN_SIDECAR_LAUNCHED_BY")),
+        enrichment=_enrichment_status(request),
     )
+
+
+def _enrichment_status(request: Request) -> EnrichmentStatus:
+    path = getattr(request.app.state, "suggestions_path", None)
+    if path is None:
+        return EnrichmentStatus(enabled=False)
+    conn = enrichment_db.open_connection(path, read_only=True)
+    try:
+        repo = SuggestionRepository(conn)
+        return EnrichmentStatus(
+            enabled=True,
+            pending_titles=repo.count_pending("title"),
+            pending_tags=repo.count_pending("tags"),
+        )
+    finally:
+        conn.close()
 
 
 # --- workflow views --------------------------------------------------------
@@ -237,3 +293,85 @@ async def index_note(note_id: str, request: Request) -> dict[str, object]:
     if not found:
         raise NotFoundError(f"Joplin has no note {note_id}.")
     return {"accepted": True, "note_id": note_id}
+
+
+# --- suggestion review (docs/enrichment.md §7) -----------------------------
+#
+# Review only. Accepting records a decision and writes **nothing** to Joplin —
+# the apply path is a deliberately separate increment, so the worst a mistaken
+# click can do here is mislabel a row in a database you can delete.
+
+
+@router.get("/suggestions", response_model=list[SuggestionResponse])
+async def list_suggestions(
+    store: SuggestionRepository | None = Depends(get_suggestions),
+    kind: str | None = Query(None, pattern="^(title|tags)$"),
+    limit: int = Query(50, ge=1, le=500),
+) -> list[SuggestionResponse]:
+    """Undecided suggestions, best guesses first."""
+    if store is None:
+        return []
+    suggestions = store.pending(kind, limit=limit)  # type: ignore[arg-type]
+    return [_to_response(s) for s in suggestions]
+
+
+@router.post("/suggestions/{suggestion_id}/accept", response_model=DecisionResponse)
+async def accept_suggestion(
+    suggestion_id: int, store: SuggestionRepository | None = Depends(get_suggestions)
+) -> DecisionResponse:
+    return _decide(store, suggestion_id, "accepted")
+
+
+@router.post("/suggestions/{suggestion_id}/reject", response_model=DecisionResponse)
+async def reject_suggestion(
+    suggestion_id: int, store: SuggestionRepository | None = Depends(get_suggestions)
+) -> DecisionResponse:
+    return _decide(store, suggestion_id, "rejected")
+
+
+def _decide(
+    store: SuggestionRepository | None, suggestion_id: int, decision: DecisionValue
+) -> DecisionResponse:
+    if store is None:
+        raise NotFoundError("Enrichment is not enabled, so there is nothing to decide.")
+    # Read and write inside one BEGIN IMMEDIATE, so two tabs cannot both pass the
+    # check and then both write.
+    with store.transaction():
+        existing = store.get(suggestion_id)
+        if existing is None:
+            raise NotFoundError(f"No suggestion {suggestion_id}.")
+        if not store.is_pending(existing):
+            raise ConflictError(
+                f"Suggestion {suggestion_id} is no longer pending "
+                f"({'superseded' if existing.superseded_by else existing.decision}). "
+                "Reload the queue."
+            )
+        store.decide(suggestion_id, decision)
+    return DecisionResponse(id=suggestion_id, decision=decision, wrote_to_joplin=False)
+
+
+@router.post("/suggestions/{suggestion_id}/dismiss", status_code=202)
+async def dismiss_note(
+    suggestion_id: int, store: SuggestionRepository | None = Depends(get_suggestions)
+) -> dict[str, object]:
+    """Reject this suggestion *and* stop suggesting this kind for the note.
+
+    Distinct from rejecting one proposal: "my title is fine, stop asking" has to
+    survive a body edit, a model change and a prompt bump, which a rejection
+    deliberately does not.
+    """
+    if store is None:
+        raise NotFoundError("Enrichment is not enabled, so there is nothing to dismiss.")
+    with store.transaction():
+        suggestion = store.get(suggestion_id)
+        if suggestion is None:
+            raise NotFoundError(f"No suggestion {suggestion_id}.")
+        if not store.is_pending(suggestion):
+            # Opting a note out for ever on the strength of an obsolete row is the
+            # worst version of this bug: the decision is permanent.
+            raise ConflictError(
+                f"Suggestion {suggestion_id} is no longer pending. Reload the queue."
+            )
+        store.decide(suggestion_id, "rejected")
+        store.opt_out(suggestion.note_id, suggestion.kind)
+    return {"accepted": True, "note_id": suggestion.note_id, "kind": suggestion.kind}

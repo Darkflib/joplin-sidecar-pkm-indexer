@@ -34,6 +34,14 @@ from pkm_sidecar.enrichment.models import (
 
 _SEP = "\x1f"  # unit separator: cannot occur in an id, title or model name
 
+# What "awaiting review" means, in one place. `pending()` and `count_pending()`
+# must agree exactly or /api/status reports a queue depth the queue disagrees
+# with, so they share this rather than each spelling it out.
+_PENDING_WHERE = (
+    "s.decision IS NULL AND s.superseded_by IS NULL "
+    "AND NOT EXISTS (SELECT 1 FROM opt_outs o WHERE o.note_id = s.note_id AND o.kind = s.kind)"
+)
+
 
 def compute_input_hash(
     *,
@@ -246,6 +254,12 @@ class SuggestionRepository:
         ).fetchone()
         return None if row is None else _row_to_suggestion(row)
 
+    def get(self, suggestion_id: int) -> Suggestion | None:
+        row = self.conn.execute(
+            "SELECT * FROM suggestions WHERE id = ?", (suggestion_id,)
+        ).fetchone()
+        return None if row is None else _row_to_suggestion(row)
+
     def current_for_note(self, note_id: str, kind: SuggestionKind) -> Suggestion | None:
         """The newest, non-superseded suggestion for a note."""
         row = self.conn.execute(
@@ -266,15 +280,47 @@ class SuggestionRepository:
         rows = self.conn.execute(
             f"""
             SELECT s.* FROM suggestions s
-            WHERE s.decision IS NULL AND s.superseded_by IS NULL {clause}
-              AND NOT EXISTS (
-                  SELECT 1 FROM opt_outs o WHERE o.note_id = s.note_id AND o.kind = s.kind)
+            WHERE {_PENDING_WHERE} {clause}
             ORDER BY s.confidence IS NULL, s.confidence DESC, s.id ASC
             LIMIT ?
             """,
             (*params, limit),
         ).fetchall()
         return [_row_to_suggestion(r) for r in rows]
+
+    def count_pending(self, kind: SuggestionKind | None = None) -> int:
+        """How deep the review queue actually is.
+
+        Counting in SQL rather than measuring a page: a capped page reports its
+        own cap once the queue is bigger, and loading a thousand full rows to
+        discard them on every ``/api/status`` poll is work for nothing.
+        """
+        clause = "AND s.kind = ?" if kind is not None else ""
+        params: list[Any] = [kind] if kind is not None else []
+        row = self.conn.execute(
+            f"SELECT count(*) AS c FROM suggestions s WHERE {_PENDING_WHERE} {clause}",
+            tuple(params),
+        ).fetchone()
+        return int(row["c"])
+
+    def is_pending(self, suggestion: Suggestion) -> bool:
+        """Whether this row may still be decided.
+
+        The three conditions mirror :data:`_PENDING_WHERE` exactly, and they have
+        to: a guard looser than the query that populates the queue lets a decision
+        be recorded on a row the queue has already hidden. Step 8 treats these
+        decisions as ground truth for per-rule precision, so that lands as
+        corrupted evidence rather than a visible error.
+
+        The opt-out check is the one that is easy to think unnecessary — an
+        opted-out note has no rows in the queue, so how would you click one? Via a
+        second suggestion for the same note and kind, which the design explicitly
+        supports for a parallel model pass: dismissing one adds the opt-out, and
+        the other is then hidden from the queue while still looking decidable.
+        """
+        if suggestion.decision is not None or suggestion.superseded_by is not None:
+            return False
+        return not self.is_opted_out(suggestion.note_id, suggestion.kind)
 
     def decide(self, suggestion_id: int, decision: DecisionValue) -> None:
         self.conn.execute(
