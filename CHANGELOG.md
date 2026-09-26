@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`config.example.toml`** — the repo shipped no example configuration, so the
+  only way to discover that `[enrichment]` was a section, or what `neighbours`
+  meant, was to read `config.py`. Every section and option is now documented with
+  its default, all commented out, so copying the file verbatim changes no
+  behaviour. Three tests keep it from rotting: a new config field, a new section,
+  or a new environment variable fails the suite until it is documented. The
+  README's own table was already missing both enrichment variables when that
+  guard was added.
 - **Suggestion review API and dashboard column (step 7 of
   [docs/enrichment.md](docs/enrichment.md))** — `GET /api/suggestions`,
   `POST /api/suggestions/{id}/accept|reject|dismiss`, pending counts on
@@ -87,6 +95,20 @@ adheres to [Semantic Versioning](https://semver.org/).
   - `doctor` gained a **`WARN`** tier that does not affect the exit code, for
     deliberate trade-offs as distinct from breakage. Plain HTTP to a model host
     on a private network is the first user of it.
+
+### Fixed
+- **The default database path was never expanded, so the index followed your
+  working directory.** Pydantic does not run a field validator on a field's
+  *default*, so `DatabaseConfig._expand` was dead for everyone who did not set a
+  path explicitly: `~/.local/share/pkm-sidecar/index.sqlite3` stayed literal, and
+  sqlite obligingly created a directory **named `~`** relative to wherever the
+  command ran. Nothing failed — you simply got a different, empty index per
+  directory, and `db path` printed a path your shell would expand elsewhere.
+  Found by running a real batch: 2,241 notes and 107 suggestions had landed in
+  `./~/.local/share/pkm-sidecar/`. Every existing test passed `PKM_SIDECAR_DB_PATH`,
+  so the default configuration — the one every new user gets — was untested.
+  `validate_default=True` now applies the declared validators, which also revives
+  the two skipped base-URL normalisers.
 
 ### Changed
 - `LocalOnlyTransport` → `SingleOriginTransport`, and

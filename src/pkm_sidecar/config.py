@@ -82,7 +82,7 @@ class ServerConfig(BaseModel):
 
 
 class JoplinConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, validate_default=True)
 
     base_url: str = "http://127.0.0.1:41184"
     token: SecretStr | None = None
@@ -96,7 +96,12 @@ class JoplinConfig(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    # validate_default: Pydantic does not run field validators on a field's
+    # default, so the validators below were dead for every default value. That
+    # left DEFAULT_DB_PATH's "~" unexpanded, and sqlite then created a literal
+    # "~" directory under the working directory — one index per directory the
+    # command happened to be run from.
+    model_config = ConfigDict(frozen=True, validate_default=True)
 
     path: Path = DEFAULT_DB_PATH
 
@@ -131,7 +136,7 @@ class EnrichmentConfig(BaseModel):
     :func:`warn_if_enrichment_endpoint_is_cleartext`.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, validate_default=True)
 
     enabled: bool = False
     ollama_base_url: str = "http://127.0.0.1:11434"
