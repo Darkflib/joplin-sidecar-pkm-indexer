@@ -52,28 +52,22 @@ Environment variables:
 | `JOPLIN_TOKEN` | _(unset)_ | Joplin Web Clipper token (required for indexing) |
 | `JOPLIN_EVENT_POLL_SECONDS` | `10` | incremental poll interval |
 | `JOPLIN_PAGE_LIMIT` | `100` | Joplin pagination size |
+| `PKM_SIDECAR_ENRICHMENT_ENABLED` | `false` | opt in to title/tag suggestions |
+| `PKM_SIDECAR_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama host for suggestions |
 
-Optional `config.toml` (keep it `chmod 600` if it holds a token):
+All settings can also come from an optional TOML file at
+`~/.config/pkm-sidecar/config.toml`. [`config.example.toml`](config.example.toml)
+documents every section and option with its default, all commented out — copy it
+and uncomment what you need:
 
-```toml
-[server]
-host = "127.0.0.1"
-port = 8765
-api_token = "change-me"
-[joplin]
-base_url = "http://127.0.0.1:41184"
-token = "..."
-event_poll_seconds = 10
-page_limit = 100
-[database]
-path = "~/.local/share/pkm-sidecar/index.sqlite3"
-[logging]
-level = "INFO"
-[indexing]
-stale_days = 90
-inbox_folder_names = ["Inbox", "00 Inbox", "_Inbox"]
-rebuild_on_empty_start = true   # auto full-rebuild on first serve if the index is empty
+```bash
+install -m 600 config.example.toml ~/.config/pkm-sidecar/config.toml
 ```
+
+Keep it `chmod 600` if it holds a token; `pkm-sidecar doctor` fails the
+`config_perms` check otherwise. Precedence is CLI flags > environment > file >
+defaults.
+
 
 > When started by the launcher (which runs `serve`), the first launch with an
 > empty index and a configured Joplin token triggers a one-time full rebuild so

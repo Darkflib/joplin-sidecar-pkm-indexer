@@ -357,3 +357,65 @@ class TestDefaultPathsAreExpanded:
         assert from_here.is_absolute()
         assert not from_here.is_relative_to(here)
 
+
+EXAMPLE_CONFIG = Path(__file__).resolve().parents[2] / "config.example.toml"
+
+# AppConfig fields that are not TOML sections: set by the loader, not the user.
+_NON_SECTION_FIELDS = {"config_path", "api_token_was_generated"}
+
+
+def _documented_keys(text: str) -> dict[str, set[str]]:
+    """Section -> keys mentioned in the example, commented out or not."""
+    sections: dict[str, set[str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current = stripped[1:-1]
+            sections.setdefault(current, set())
+        elif current and "=" in stripped:
+            sections[current].add(stripped.split("=", 1)[0].strip())
+    return sections
+
+
+class TestExampleConfig:
+    """An example config that drifts from the code is worse than none at all.
+
+    The repo shipped no example, so the only way to discover that ``[enrichment]``
+    existed — or what ``neighbours`` meant — was to read ``config.py``.
+    """
+
+    def test_the_example_exists_and_loads(self) -> None:
+        assert EXAMPLE_CONFIG.is_file()
+        cfg = load_config(env={"PKM_SIDECAR_CONFIG_PATH": str(EXAMPLE_CONFIG)})
+        assert isinstance(cfg, AppConfig)
+
+    def test_fully_commented_out_it_yields_the_defaults(self) -> None:
+        """Copying the file verbatim must not change any behaviour."""
+        from_example = load_config(env={"PKM_SIDECAR_CONFIG_PATH": str(EXAMPLE_CONFIG)})
+        assert from_example.enrichment == config.EnrichmentConfig()
+        assert from_example.indexing == config.IndexingConfig()
+        assert from_example.server.host == config.ServerConfig().host
+        assert from_example.joplin.base_url == config.JoplinConfig().base_url
+
+    def test_every_section_is_documented(self) -> None:
+        documented = _documented_keys(EXAMPLE_CONFIG.read_text())
+        expected = set(AppConfig.model_fields) - _NON_SECTION_FIELDS
+        assert expected <= set(documented), f"undocumented sections: {expected - set(documented)}"
+
+    def test_every_option_is_documented(self) -> None:
+        """Fails when a config field is added without a line in the example."""
+        documented = _documented_keys(EXAMPLE_CONFIG.read_text())
+        missing: list[str] = []
+        for section in set(AppConfig.model_fields) - _NON_SECTION_FIELDS:
+            model = AppConfig.model_fields[section].annotation
+            for field in getattr(model, "model_fields", {}):
+                if field not in documented.get(section, set()):
+                    missing.append(f"{section}.{field}")
+        assert not missing, f"not in config.example.toml: {sorted(missing)}"
+
+    def test_every_environment_variable_is_in_the_readme_table(self) -> None:
+        """The table was missing both enrichment variables when this was written."""
+        readme = (EXAMPLE_CONFIG.parent / "README.md").read_text()
+        missing = [name for name in config._ENV_MAP if f"`{name}`" not in readme]
+        assert not missing, f"not documented in README.md: {sorted(missing)}"
