@@ -306,11 +306,21 @@ class SuggestionRepository:
     def is_pending(self, suggestion: Suggestion) -> bool:
         """Whether this row may still be decided.
 
-        A superseded or already-decided row must not be overwritten: step 8 treats
-        these decisions as ground truth for measuring precision, so a stale click
-        from a tab left open overnight would corrupt that evidence invisibly.
+        The three conditions mirror :data:`_PENDING_WHERE` exactly, and they have
+        to: a guard looser than the query that populates the queue lets a decision
+        be recorded on a row the queue has already hidden. Step 8 treats these
+        decisions as ground truth for per-rule precision, so that lands as
+        corrupted evidence rather than a visible error.
+
+        The opt-out check is the one that is easy to think unnecessary — an
+        opted-out note has no rows in the queue, so how would you click one? Via a
+        second suggestion for the same note and kind, which the design explicitly
+        supports for a parallel model pass: dismissing one adds the opt-out, and
+        the other is then hidden from the queue while still looking decidable.
         """
-        return suggestion.decision is None and suggestion.superseded_by is None
+        if suggestion.decision is not None or suggestion.superseded_by is not None:
+            return False
+        return not self.is_opted_out(suggestion.note_id, suggestion.kind)
 
     def decide(self, suggestion_id: int, decision: DecisionValue) -> None:
         self.conn.execute(

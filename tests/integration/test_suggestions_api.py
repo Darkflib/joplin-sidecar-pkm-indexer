@@ -272,3 +272,78 @@ class TestDashboardErrorHandling:
         block = block[: block.index("// ----------")]
         assert 'fillError("suggestions"' in block
         assert "column.hidden = true" not in block
+
+
+class TestOptOutHidesSiblings:
+    """An opted-out note's *other* suggestion must not stay decidable.
+
+    Reachable because a second suggestion for one note and kind is supported by
+    design, for a parallel model pass: dismissing one adds the opt-out, which
+    hides the sibling from the queue while leaving it looking decidable.
+    """
+
+    @staticmethod
+    def _second_model_suggestion(cfg: AppConfig) -> int:
+        path = suggestions_db_path(cfg)
+        conn = edb.open_connection(path)
+        repo = SuggestionRepository(conn)
+        try:
+            with repo.transaction():
+                stored = repo.record(
+                    Suggestion(
+                        note_id="n0",
+                        kind="title",
+                        input_hash=compute_input_hash(
+                            kind="title",
+                            body_hash="bh0",
+                            current_state="Untitled",
+                            model="other:20b",  # same note, different model
+                            prompt_version=1,
+                        ),
+                        payload={"title": "A Second Opinion"},
+                        current_value={"title": "Untitled"},
+                        note_body_hash="bh0",
+                        model="other:20b",
+                        prompt_version=1,
+                        reason="joplin_default",
+                    )
+                )
+            return stored.id or 0
+        finally:
+            conn.close()
+
+    def test_both_suggestions_are_listed_before_any_dismissal(self, enabled) -> None:
+        client, cfg, _ = enabled
+        self._second_model_suggestion(cfg)
+        titles = {
+            s["proposed"]["title"] for s in client.get("/api/suggestions", headers=AUTH).json()
+        }
+        assert {"Proposed Title 0", "A Second Opinion"} <= titles
+
+    def test_dismissing_one_makes_the_sibling_undecidable(self, enabled) -> None:
+        client, cfg, ids = enabled
+        sibling = self._second_model_suggestion(cfg)
+
+        assert client.post(f"/api/suggestions/{ids[0]}/dismiss", headers=AUTH).status_code == 202
+
+        # Hidden from the queue…
+        listed = [s["id"] for s in client.get("/api/suggestions", headers=AUTH).json()]
+        assert sibling not in listed
+        # …and no longer acceptable from a tab that still shows it.
+        assert client.post(f"/api/suggestions/{sibling}/accept", headers=AUTH).status_code == 409
+
+    def test_the_guard_matches_the_queue_exactly(self, enabled) -> None:
+        """Anything absent from pending() must be refused, by construction."""
+        client, cfg, ids = enabled
+        sibling = self._second_model_suggestion(cfg)
+        client.post(f"/api/suggestions/{ids[0]}/dismiss", headers=AUTH)
+
+        conn = edb.open_connection(suggestions_db_path(cfg))
+        try:
+            repo = SuggestionRepository(conn)
+            listed = {s.id for s in repo.pending("title", limit=500)}
+            for suggestion_id in (*ids, sibling):
+                row = repo.get(suggestion_id)
+                assert repo.is_pending(row) == (suggestion_id in listed)
+        finally:
+            conn.close()
