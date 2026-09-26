@@ -54,6 +54,13 @@ def test_list_views_ok_with_auth(client: TestClient) -> None:
 
 
 def test_openapi_exposes_no_mutating_methods(cfg: AppConfig) -> None:
+    """Pin the mutating surface, so a new POST has to be added here on purpose.
+
+    Every POST below writes only to *this* service's own state — the index, or the
+    suggestions store. None of them reaches Joplin: that remains structurally
+    impossible from the indexing client, and the apply path is a separate
+    increment that does not exist yet.
+    """
     schema = create_app(cfg, start_indexer_loop=False).openapi()
     methods: set[str] = set()
     posts: list[str] = []
@@ -65,7 +72,15 @@ def test_openapi_exposes_no_mutating_methods(cfg: AppConfig) -> None:
     assert "PUT" not in methods
     assert "PATCH" not in methods
     assert "DELETE" not in methods
-    assert sorted(posts) == ["/api/index/note/{note_id}", "/api/index/rebuild", "/api/index/sync"]
+    assert sorted(posts) == [
+        "/api/index/note/{note_id}",
+        "/api/index/rebuild",
+        "/api/index/sync",
+        # Review decisions. These write to suggestions.sqlite3, never to Joplin.
+        "/api/suggestions/{suggestion_id}/accept",
+        "/api/suggestions/{suggestion_id}/dismiss",
+        "/api/suggestions/{suggestion_id}/reject",
+    ]
 
 
 class TestNonLocalBindGuard:

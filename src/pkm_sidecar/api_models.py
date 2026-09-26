@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 from pkm_sidecar.models import GraphEdge, GraphNode
@@ -45,6 +47,14 @@ class RuntimeStatus(BaseModel):
     launched_by: str | None = None
 
 
+class EnrichmentStatus(BaseModel):
+    """Whether suggestions exist to review, so the dashboard can hide the column."""
+
+    enabled: bool = False
+    pending_titles: int = 0
+    pending_tags: int = 0
+
+
 class StatusResponse(BaseModel):
     service: str
     version: str
@@ -52,6 +62,7 @@ class StatusResponse(BaseModel):
     database: DatabaseStatus
     indexing: IndexingStatus
     runtime: RuntimeStatus
+    enrichment: EnrichmentStatus = EnrichmentStatus()
 
 
 class GraphResponse(BaseModel):
@@ -77,3 +88,31 @@ class NoteDetail(BaseModel):
     todo_due: int | None = None
     todo_completed: int | None = None
     source_url: str | None = None
+
+
+class SuggestionResponse(BaseModel):
+    """One suggestion awaiting review.
+
+    Carries ``current`` alongside ``proposed`` so review is a comparison rather
+    than a leap of faith, and ``reason`` so a rule that produces bad suggestions
+    can be identified from the queue itself rather than inferred.
+    """
+
+    id: int
+    note_id: str
+    kind: str
+    proposed: dict[str, Any]
+    current: dict[str, Any] | None = None
+    reason: str | None = None
+    confidence: float | None = None
+    model: str
+    stale: bool = False
+    created_at: int
+
+
+class DecisionResponse(BaseModel):
+    """What a decision changed. Nothing in Joplin — this increment is read-only."""
+
+    id: int
+    decision: str
+    wrote_to_joplin: bool = False

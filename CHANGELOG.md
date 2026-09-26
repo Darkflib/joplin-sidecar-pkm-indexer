@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Suggestion review API and dashboard column (step 7 of
+  [docs/enrichment.md](docs/enrichment.md))** — `GET /api/suggestions`,
+  `POST /api/suggestions/{id}/accept|reject|dismiss`, pending counts on
+  `/api/status`, and a review column that hides itself when there is nothing to
+  review. The 87 title suggestions a batch produces are now actually reviewable.
+  - **Nothing reaches Joplin.** Every decision writes only to
+    `suggestions.sqlite3`; the response says `wrote_to_joplin: false` and a test
+    pins it. Verified live: accepting a real suggestion produced zero requests to
+    Joplin's port.
+  - `dismiss` is distinct from `reject` — "stop suggesting titles for this note"
+    has to outlive a body edit, a model change and a prompt bump, which a
+    rejection deliberately does not.
+  - Each row shows the proposed title, the current one, and the detection rule
+    that flagged it, so review is a comparison and a bad rule is identifiable from
+    the queue rather than inferred.
+  - With enrichment disabled the listing is empty rather than an error, and **no
+    store file is created** — tested, so a disabled feature leaves no trace.
 - **Embedding backfill and tag scoring (step 5 of
   [docs/enrichment.md](docs/enrichment.md))** — batched backfill cached on the
   hash of the text actually embedded, brute-force cosine kNN, and mean-similarity

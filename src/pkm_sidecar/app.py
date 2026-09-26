@@ -48,6 +48,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     writer = db.open_writer_connection(cfg.database.path)
     app.state.writer = writer
 
+    # The enrichment store is only opened when the feature is on, so a disabled
+    # install never grows a file for it.
+    app.state.suggestions_path = None
+    if cfg.enrichment.enabled:
+        from pkm_sidecar.config import suggestions_db_path
+        from pkm_sidecar.enrichment import db as enrichment_db
+
+        store_path = suggestions_db_path(cfg)
+        enrichment_db.init_db(store_path)
+        app.state.suggestions_path = store_path
+
     joplin_token = cfg.joplin.token.get_secret_value() if cfg.joplin.token else ""
     client = JoplinClient(
         cfg.joplin.base_url,

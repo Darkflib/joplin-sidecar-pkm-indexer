@@ -246,6 +246,12 @@ class SuggestionRepository:
         ).fetchone()
         return None if row is None else _row_to_suggestion(row)
 
+    def get(self, suggestion_id: int) -> Suggestion | None:
+        row = self.conn.execute(
+            "SELECT * FROM suggestions WHERE id = ?", (suggestion_id,)
+        ).fetchone()
+        return None if row is None else _row_to_suggestion(row)
+
     def current_for_note(self, note_id: str, kind: SuggestionKind) -> Suggestion | None:
         """The newest, non-superseded suggestion for a note."""
         row = self.conn.execute(
