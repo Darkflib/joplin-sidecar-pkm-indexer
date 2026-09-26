@@ -301,3 +301,59 @@ class TestCleartextWarningScrubbing:
         with caplog.at_level(logging.WARNING):
             config.warn_if_enrichment_endpoint_is_cleartext(cfg, LOG)
         assert "topsecret" not in caplog.text
+
+
+class TestDefaultPathsAreExpanded:
+    """The default configuration is the one nobody tests and everybody gets.
+
+    Every other test here passes ``PKM_SIDECAR_DB_PATH``, so the default was
+    never exercised — and Pydantic does not run field validators on a field's
+    default. ``DatabaseConfig._expand`` was therefore dead for the default,
+    leaving ``~/.local/share/...`` unexpanded. Nothing crashed: sqlite happily
+    created a directory *named* ``~`` under the working directory, so the index
+    silently became per-cwd, and `db path` printed a path the shell would expand
+    to somewhere else entirely.
+    """
+
+    def test_default_db_path_is_absolute(self) -> None:
+        assert config.DatabaseConfig().path.is_absolute()
+
+    def test_default_db_path_expands_to_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        path = config.DatabaseConfig().path
+        assert path == tmp_path / ".local/share/pkm-sidecar/index.sqlite3"
+
+    def test_no_configured_path_keeps_a_literal_tilde(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Guards every path field, including ones added later."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cfg = load_config(env={})
+        paths = [cfg.database.path, config.suggestions_db_path(cfg)]
+        if cfg.config_path is not None:
+            paths.append(cfg.config_path)
+        for path in paths:
+            assert not str(path).startswith("~"), f"unexpanded: {path}"
+            assert path.is_absolute(), f"not absolute: {path}"
+
+    def test_the_default_does_not_follow_the_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The failure this caused: one index per directory you ran from."""
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        here, there = tmp_path / "here", tmp_path / "there"
+        here.mkdir()
+        there.mkdir()
+        monkeypatch.chdir(here)
+        from_here = config.DatabaseConfig().path
+        monkeypatch.chdir(there)
+        from_there = config.DatabaseConfig().path
+        assert from_here == from_there
+        # Equality alone passes on a *relative* default, which is the bug:
+        # "~/..." is the same string from either directory, and sqlite then
+        # resolves it against whichever one you happened to be in.
+        assert from_here.is_absolute()
+        assert not from_here.is_relative_to(here)
+
