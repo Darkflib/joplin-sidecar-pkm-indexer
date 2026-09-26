@@ -28,7 +28,7 @@ from pkm_sidecar.api_models import (
 from pkm_sidecar.enrichment import db as enrichment_db
 from pkm_sidecar.enrichment.models import DecisionValue, Suggestion
 from pkm_sidecar.enrichment.repository import SuggestionRepository
-from pkm_sidecar.errors import NotFoundError, scrub_token
+from pkm_sidecar.errors import ConflictError, NotFoundError, scrub_token
 from pkm_sidecar.models import ExtractedLink, ExtractedTask, NoteSummary, ResourceRow, SearchHit
 from pkm_sidecar.repositories import NoteRepository
 from pkm_sidecar.security import verify_bearer_token
@@ -158,8 +158,8 @@ def _enrichment_status(request: Request) -> EnrichmentStatus:
         repo = SuggestionRepository(conn)
         return EnrichmentStatus(
             enabled=True,
-            pending_titles=len(repo.pending("title", limit=1000)),
-            pending_tags=len(repo.pending("tags", limit=1000)),
+            pending_titles=repo.count_pending("title"),
+            pending_tags=repo.count_pending("tags"),
         )
     finally:
         conn.close()
@@ -334,9 +334,18 @@ def _decide(
 ) -> DecisionResponse:
     if store is None:
         raise NotFoundError("Enrichment is not enabled, so there is nothing to decide.")
+    # Read and write inside one BEGIN IMMEDIATE, so two tabs cannot both pass the
+    # check and then both write.
     with store.transaction():
-        if store.get(suggestion_id) is None:
+        existing = store.get(suggestion_id)
+        if existing is None:
             raise NotFoundError(f"No suggestion {suggestion_id}.")
+        if not store.is_pending(existing):
+            raise ConflictError(
+                f"Suggestion {suggestion_id} is no longer pending "
+                f"({'superseded' if existing.superseded_by else existing.decision}). "
+                "Reload the queue."
+            )
         store.decide(suggestion_id, decision)
     return DecisionResponse(id=suggestion_id, decision=decision, wrote_to_joplin=False)
 
@@ -357,6 +366,12 @@ async def dismiss_note(
         suggestion = store.get(suggestion_id)
         if suggestion is None:
             raise NotFoundError(f"No suggestion {suggestion_id}.")
+        if not store.is_pending(suggestion):
+            # Opting a note out for ever on the strength of an obsolete row is the
+            # worst version of this bug: the decision is permanent.
+            raise ConflictError(
+                f"Suggestion {suggestion_id} is no longer pending. Reload the queue."
+            )
         store.decide(suggestion_id, "rejected")
         store.opt_out(suggestion.note_id, suggestion.kind)
     return {"accepted": True, "note_id": suggestion.note_id, "kind": suggestion.kind}

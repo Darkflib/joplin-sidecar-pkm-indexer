@@ -198,3 +198,77 @@ class TestDashboardAsset:
         assert "/api/suggestions" in js
         # The button tooltips state that nothing is written to Joplin.
         assert "nothing is written to Joplin" in js
+
+
+class TestStaleDecisions:
+    """Step 8 treats these decisions as ground truth, so a stale click corrupts it."""
+
+    def test_deciding_twice_is_a_conflict(self, enabled) -> None:
+        client, _, ids = enabled
+        assert client.post(f"/api/suggestions/{ids[0]}/accept", headers=AUTH).status_code == 200
+        second = client.post(f"/api/suggestions/{ids[0]}/reject", headers=AUTH)
+        assert second.status_code == 409
+        assert "no longer pending" in second.json()["error"]["message"]
+
+    def test_the_first_decision_survives(self, enabled) -> None:
+        """A reject from a stale tab must not overwrite an accept."""
+        client, cfg, ids = enabled
+        client.post(f"/api/suggestions/{ids[0]}/accept", headers=AUTH)
+        client.post(f"/api/suggestions/{ids[0]}/reject", headers=AUTH)
+        conn = edb.open_connection(suggestions_db_path(cfg))
+        try:
+            assert SuggestionRepository(conn).get(ids[0]).decision == "accepted"
+        finally:
+            conn.close()
+
+    def test_a_superseded_suggestion_cannot_be_decided(self, enabled) -> None:
+        client, cfg, ids = enabled
+        conn = edb.open_connection(suggestions_db_path(cfg))
+        try:
+            repo = SuggestionRepository(conn)
+            with repo.transaction():
+                repo.supersede(ids[0], ids[1])
+        finally:
+            conn.close()
+        assert client.post(f"/api/suggestions/{ids[0]}/accept", headers=AUTH).status_code == 409
+
+    def test_dismiss_refuses_an_obsolete_row(self, enabled) -> None:
+        """The permanent one: opting a note out for ever on stale evidence."""
+        client, cfg, ids = enabled
+        client.post(f"/api/suggestions/{ids[0]}/reject", headers=AUTH)
+        assert client.post(f"/api/suggestions/{ids[0]}/dismiss", headers=AUTH).status_code == 409
+        conn = edb.open_connection(suggestions_db_path(cfg))
+        try:
+            assert SuggestionRepository(conn).is_opted_out("n0", "title") is False
+        finally:
+            conn.close()
+
+
+class TestExactCounts:
+    def test_counts_are_not_capped_by_a_page_size(self, tmp_path, monkeypatch) -> None:
+        """A capped page reports its own cap once the queue is bigger than it."""
+        cfg = _cfg(tmp_path, monkeypatch, enabled=True)
+        _seed(cfg, titles=1200)
+        with TestClient(create_app(cfg, start_indexer_loop=False)) as client:
+            enrichment = client.get("/api/status", headers=AUTH).json()["enrichment"]
+        assert enrichment["pending_titles"] == 1200
+
+    def test_count_and_listing_agree_on_what_pending_means(self, enabled) -> None:
+        """One predicate, so the depth cannot disagree with the queue."""
+        client, _cfg, ids = enabled
+        client.post(f"/api/suggestions/{ids[0]}/dismiss", headers=AUTH)
+        listed = len(client.get("/api/suggestions?limit=500", headers=AUTH).json())
+        counted = client.get("/api/status", headers=AUTH).json()["enrichment"]["pending_titles"]
+        assert listed == counted == 2
+
+
+class TestDashboardErrorHandling:
+    def test_a_failed_load_shows_an_error_rather_than_hiding(self) -> None:
+        """Hidden is indistinguishable from 'nothing to review'."""
+        from pkm_sidecar.dashboard import STATIC_DIR
+
+        js = (STATIC_DIR / "dashboard.js").read_text()
+        block = js[js.index("async function loadSuggestions") :]
+        block = block[: block.index("// ----------")]
+        assert 'fillError("suggestions"' in block
+        assert "column.hidden = true" not in block

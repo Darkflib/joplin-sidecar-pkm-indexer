@@ -226,7 +226,10 @@ async function loadSuggestions() {
     items = await api("/api/suggestions?kind=title&limit=50");
   } catch (err) {
     if (err.message === "unauthorized") throw err;
-    column.hidden = true;
+    // Show the failure rather than hiding the column: hidden is indistinguishable
+    // from "nothing to review", which would quietly conceal a real fault.
+    column.hidden = false;
+    fillError("suggestions", "Failed to load");
     return;
   }
   column.hidden = items.length === 0;
