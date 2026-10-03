@@ -24,6 +24,8 @@ import uvicorn
 from pkm_sidecar import __version__, db, security
 from pkm_sidecar.config import (
     AppConfig,
+    describe_legacy_store,
+    find_legacy_default_store,
     is_loopback_host,
     load_config,
     require_joplin_token,
@@ -397,6 +399,21 @@ async def _run_doctor(cfg: AppConfig) -> list[DoctorResult]:
     else:
         results.append(
             DoctorResult("FAIL", "bind_local", f"{cfg.server.host} is not loopback (no override)")
+        )
+
+    # A store stranded by the pre-expansion default path (see
+    # find_legacy_default_store). Advisory, not FAIL: nothing is broken or
+    # unsafe, but decisions left there are silently not being read.
+    legacy = find_legacy_default_store()
+    if legacy is None or legacy.resolve() == cfg.database.path.parent.resolve():
+        results.append(DoctorResult("OK", "legacy_db_path", "no stranded store"))
+    else:
+        results.append(
+            DoctorResult(
+                "WARN",
+                "legacy_db_path",
+                describe_legacy_store(legacy, cfg.database.path.parent),
+            )
         )
 
     # Config file permissions (POSIX only).

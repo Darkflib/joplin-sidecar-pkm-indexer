@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`config.example.toml`** — the repo shipped no example configuration, so the
+  only way to discover that `[enrichment]` was a section, or what `neighbours`
+  meant, was to read `config.py`. Every section and option is now documented with
+  its default, all commented out, so copying the file verbatim changes no
+  behaviour. Three tests keep it from rotting: a new config field, a new section,
+  or a new environment variable fails the suite until it is documented. The
+  README's own table was already missing both enrichment variables when that
+  guard was added.
+  The documented install command creates `~/.config/pkm-sidecar` first;
+  `install -m 600` alone fails on a machine that has never had the directory,
+  which is precisely the machine following the instructions.
 - **Suggestion review API and dashboard column (step 7 of
   [docs/enrichment.md](docs/enrichment.md))** — `GET /api/suggestions`,
   `POST /api/suggestions/{id}/accept|reject|dismiss`, pending counts on
@@ -87,6 +98,40 @@ adheres to [Semantic Versioning](https://semver.org/).
   - `doctor` gained a **`WARN`** tier that does not affect the exit code, for
     deliberate trade-offs as distinct from breakage. Plain HTTP to a model host
     on a private network is the first user of it.
+
+### Fixed
+- **The default database path was never expanded, so the index followed your
+  working directory.** Pydantic does not run a field validator on a field's
+  *default*, so `DatabaseConfig._expand` was dead for everyone who did not set a
+  path explicitly: `~/.local/share/pkm-sidecar/index.sqlite3` stayed literal, and
+  sqlite obligingly created a directory **named `~`** relative to wherever the
+  command ran. Nothing failed — you simply got a different, empty index per
+  directory, and `db path` printed a path your shell would expand elsewhere.
+  Found by running a real batch: 2,241 notes and 107 suggestions had landed in
+  `./~/.local/share/pkm-sidecar/`. Every existing test passed `PKM_SIDECAR_DB_PATH`,
+  so the default configuration — the one every new user gets — was untested.
+  `validate_default=True` now applies the declared validators, which also revives
+  the two skipped base-URL normalisers.
+  - **Upgrade note.** If you ran a previous version without setting a database
+    path, your files are under a directory literally named `~` beside wherever you
+    ran the command — and `git status` never showed it, because `*.sqlite3` is
+    gitignored and git does not report a directory holding only ignored files.
+    `pkm-sidecar doctor` now has a `legacy_db_path` check that finds such a store
+    and says what to do with it. It is a WARN, not a FAIL: a leftover directory is
+    not a broken install.
+    - The detection is deliberately **not** a migration. The legacy location
+      depends on a working directory the program no longer knows, so there may be
+      one per directory you ever ran from, and `suggestions.sqlite3` holds
+      accept/reject decisions — silently merging an arbitrary one into the live
+      store would be a guess about whose decisions win. Where both stores hold
+      decisions the check reports that fact and offers no command, because `mv`
+      there would clobber the live one.
+    - Only the suggestion store needs rescuing. The index is derived; delete it
+      and run `index rebuild`.
+  - Tests now redirect `HOME` suite-wide. `load_config` creates the parent of the
+    configured database path, so any test that loaded a config without overriding
+    `PKM_SIDECAR_DB_PATH` was creating `~/.local/share/pkm-sidecar` in the
+    developer's own home — two of the new example-config tests did exactly that.
 
 ### Changed
 - `LocalOnlyTransport` → `SingleOriginTransport`, and

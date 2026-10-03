@@ -205,3 +205,38 @@ def test_enrich_titles_refuses_when_disabled(tmp_path: Path) -> None:
     result = runner.invoke(app, ["enrich", "titles"], env=_env(tmp_path))
     assert result.exit_code == 2
     assert "opt in" in result.stderr
+
+
+def _strand_a_store(root: Path, *, suggestions: bool) -> Path:
+    legacy = root / "~" / ".local" / "share" / "pkm-sidecar"
+    legacy.mkdir(parents=True)
+    (legacy / "index.sqlite3").touch()
+    if suggestions:
+        (legacy / "suggestions.sqlite3").touch()
+    return legacy
+
+
+def test_doctor_reports_a_store_stranded_by_the_old_default_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-expansion default left stores under a literal `~` beside the cwd."""
+    cwd = tmp_path / "ran-from-here"
+    cwd.mkdir()
+    _strand_a_store(cwd, suggestions=True)
+    monkeypatch.chdir(cwd)
+    result = runner.invoke(app, ["doctor"], env=_env(tmp_path))
+    assert "WARN: legacy_db_path" in result.stdout
+    assert "decisions" in result.stdout
+    # Advisory only: a leftover directory is not a broken install.
+    assert "FAIL: legacy_db_path" not in result.stdout
+
+
+def test_doctor_is_quiet_when_nothing_is_stranded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cwd = tmp_path / "clean"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    result = runner.invoke(app, ["doctor"], env=_env(tmp_path))
+    assert "OK: legacy_db_path" in result.stdout
+    assert "WARN: legacy_db_path" not in result.stdout

@@ -82,7 +82,7 @@ class ServerConfig(BaseModel):
 
 
 class JoplinConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, validate_default=True)
 
     base_url: str = "http://127.0.0.1:41184"
     token: SecretStr | None = None
@@ -96,7 +96,12 @@ class JoplinConfig(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    # validate_default: Pydantic does not run field validators on a field's
+    # default, so the validators below were dead for every default value. That
+    # left DEFAULT_DB_PATH's "~" unexpanded, and sqlite then created a literal
+    # "~" directory under the working directory — one index per directory the
+    # command happened to be run from.
+    model_config = ConfigDict(frozen=True, validate_default=True)
 
     path: Path = DEFAULT_DB_PATH
 
@@ -131,7 +136,7 @@ class EnrichmentConfig(BaseModel):
     :func:`warn_if_enrichment_endpoint_is_cleartext`.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, validate_default=True)
 
     enabled: bool = False
     ollama_base_url: str = "http://127.0.0.1:11434"
@@ -259,6 +264,59 @@ def _load_toml(config_path: Path, *, explicit: bool) -> dict[str, Any]:
         if section in parsed and isinstance(parsed[section], dict):
             sections[section] = dict(parsed[section])
     return sections
+
+
+# --- legacy default path ---------------------------------------------------
+
+# Before the default path was expanded, DEFAULT_DB_PATH stayed the literal string
+# "~/.local/share/pkm-sidecar/index.sqlite3" and sqlite resolved it against the
+# working directory, creating a directory *named* "~" there.
+_LEGACY_TILDE_SUBPATH = Path("~/.local/share/pkm-sidecar")
+
+
+def find_legacy_default_store(cwd: Path | None = None) -> Path | None:
+    """A store left behind under a directory literally named ``~``, or None.
+
+    Deliberately detection only, never migration. The legacy location depends on
+    a working directory the program no longer knows, so there may be none, one,
+    or one per directory the command was ever run from — and
+    ``suggestions.sqlite3`` holds accept/reject decisions, so merging an
+    arbitrary one into the real store would be a guess about whose decisions
+    win. Reporting it and naming the move is the only honest option.
+    """
+    candidate = (cwd if cwd is not None else Path.cwd()) / _LEGACY_TILDE_SUBPATH
+    return candidate if candidate.is_dir() else None
+
+
+def describe_legacy_store(legacy: Path, target: Path) -> str:
+    """What is in a legacy directory and what to do about it.
+
+    Separates the disposable from the irreplaceable: the index is derived and a
+    rebuild recreates it, but decisions and opt-outs exist nowhere else. Where
+    both stores hold decisions the advice is deliberately not a command —
+    suggesting `mv` there would silently clobber the live one.
+    """
+    index = legacy / "index.sqlite3"
+    suggestions = legacy / "suggestions.sqlite3"
+    rebuild = "then `pkm-sidecar index rebuild`"
+    if suggestions.is_file():
+        if (target / "suggestions.sqlite3").is_file():
+            return (
+                f"two suggestion stores hold decisions and only {target} is being read: "
+                f"the other is {suggestions}. Merging them is a judgement about which "
+                f"decisions win, so inspect both rather than moving either."
+            )
+        return (
+            f"accept/reject decisions from an older default path are not being read: "
+            f"mv {suggestions} {target}/ — the index beside it is derived, so "
+            f"rm -rf {legacy} afterwards, {rebuild}"
+        )
+    if index.is_file():
+        return (
+            f"a stale index from an older default path is being ignored and can be "
+            f"deleted: rm -rf {legacy} ({rebuild})"
+        )
+    return f"an empty directory from an older default path can be deleted: rm -rf {legacy}"
 
 
 def _ensure_directories(cfg: AppConfig) -> None:
