@@ -20,3 +20,19 @@ def _reset_failure_log_guard() -> Iterator[None]:
     services._FAILURE_LOG_GUARD.reset()
     yield
     services._FAILURE_LOG_GUARD.reset()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point ``HOME`` at a scratch directory for every test.
+
+    ``load_config`` calls ``_ensure_directories``, which creates the parent of
+    the configured database path. Any test that loads a config without
+    overriding ``PKM_SIDECAR_DB_PATH`` therefore created
+    ``~/.local/share/pkm-sidecar`` in the *developer's* home — two of the
+    example-config tests did exactly that. Isolating here rather than per test
+    means a future test cannot reintroduce it.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))

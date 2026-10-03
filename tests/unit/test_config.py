@@ -419,3 +419,59 @@ class TestExampleConfig:
         readme = (EXAMPLE_CONFIG.parent / "README.md").read_text()
         missing = [name for name in config._ENV_MAP if f"`{name}`" not in readme]
         assert not missing, f"not documented in README.md: {sorted(missing)}"
+
+
+class TestLegacyDefaultStore:
+    """Detection only. See `find_legacy_default_store` for why not migration."""
+
+    def _legacy(self, root: Path) -> Path:
+        path = root / "~" / ".local" / "share" / "pkm-sidecar"
+        path.mkdir(parents=True)
+        return path
+
+    def test_absent_when_there_is_no_tilde_directory(self, tmp_path: Path) -> None:
+        assert config.find_legacy_default_store(tmp_path) is None
+
+    def test_found_under_the_working_directory(self, tmp_path: Path) -> None:
+        legacy = self._legacy(tmp_path)
+        assert config.find_legacy_default_store(tmp_path) == legacy
+
+    def test_a_file_named_tilde_is_not_a_store(self, tmp_path: Path) -> None:
+        (tmp_path / "~").write_text("not a directory")
+        assert config.find_legacy_default_store(tmp_path) is None
+
+    def test_stranded_decisions_get_a_move_command(self, tmp_path: Path) -> None:
+        legacy = self._legacy(tmp_path)
+        (legacy / "suggestions.sqlite3").touch()
+        (legacy / "index.sqlite3").touch()
+        target = tmp_path / "real"
+        target.mkdir()
+        message = config.describe_legacy_store(legacy, target)
+        assert "decisions" in message
+        assert f"mv {legacy / 'suggestions.sqlite3'}" in message
+        assert "rebuild" in message  # the index beside it is disposable
+
+    def test_it_never_suggests_moving_over_a_live_store(self, tmp_path: Path) -> None:
+        """`mv` onto an existing suggestions.sqlite3 would clobber real decisions."""
+        legacy = self._legacy(tmp_path)
+        (legacy / "suggestions.sqlite3").touch()
+        target = tmp_path / "real"
+        target.mkdir()
+        (target / "suggestions.sqlite3").touch()
+        message = config.describe_legacy_store(legacy, target)
+        assert "mv " not in message
+        assert "rm " not in message
+        assert "inspect both" in message
+
+    def test_an_index_alone_is_disposable(self, tmp_path: Path) -> None:
+        legacy = self._legacy(tmp_path)
+        (legacy / "index.sqlite3").touch()
+        message = config.describe_legacy_store(legacy, tmp_path / "real")
+        assert "rm -rf" in message
+        assert "decisions" not in message
+
+    def test_an_empty_leftover_just_says_delete_it(self, tmp_path: Path) -> None:
+        legacy = self._legacy(tmp_path)
+        message = config.describe_legacy_store(legacy, tmp_path / "real")
+        assert "empty" in message
+        assert "rm -rf" in message

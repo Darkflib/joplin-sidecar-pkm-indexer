@@ -4,6 +4,7 @@
 # it) and uncomment only what you want to change. Every key below is commented
 # out and shows its built-in default, so an empty file is a valid config.
 #
+#   mkdir -p ~/.config/pkm-sidecar
 #   install -m 600 config.example.toml ~/.config/pkm-sidecar/config.toml
 #
 # Keep the file chmod 600 if it holds a token — `pkm-sidecar doctor` checks this

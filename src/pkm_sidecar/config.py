@@ -266,6 +266,59 @@ def _load_toml(config_path: Path, *, explicit: bool) -> dict[str, Any]:
     return sections
 
 
+# --- legacy default path ---------------------------------------------------
+
+# Before the default path was expanded, DEFAULT_DB_PATH stayed the literal string
+# "~/.local/share/pkm-sidecar/index.sqlite3" and sqlite resolved it against the
+# working directory, creating a directory *named* "~" there.
+_LEGACY_TILDE_SUBPATH = Path("~/.local/share/pkm-sidecar")
+
+
+def find_legacy_default_store(cwd: Path | None = None) -> Path | None:
+    """A store left behind under a directory literally named ``~``, or None.
+
+    Deliberately detection only, never migration. The legacy location depends on
+    a working directory the program no longer knows, so there may be none, one,
+    or one per directory the command was ever run from — and
+    ``suggestions.sqlite3`` holds accept/reject decisions, so merging an
+    arbitrary one into the real store would be a guess about whose decisions
+    win. Reporting it and naming the move is the only honest option.
+    """
+    candidate = (cwd if cwd is not None else Path.cwd()) / _LEGACY_TILDE_SUBPATH
+    return candidate if candidate.is_dir() else None
+
+
+def describe_legacy_store(legacy: Path, target: Path) -> str:
+    """What is in a legacy directory and what to do about it.
+
+    Separates the disposable from the irreplaceable: the index is derived and a
+    rebuild recreates it, but decisions and opt-outs exist nowhere else. Where
+    both stores hold decisions the advice is deliberately not a command —
+    suggesting `mv` there would silently clobber the live one.
+    """
+    index = legacy / "index.sqlite3"
+    suggestions = legacy / "suggestions.sqlite3"
+    rebuild = "then `pkm-sidecar index rebuild`"
+    if suggestions.is_file():
+        if (target / "suggestions.sqlite3").is_file():
+            return (
+                f"two suggestion stores hold decisions and only {target} is being read: "
+                f"the other is {suggestions}. Merging them is a judgement about which "
+                f"decisions win, so inspect both rather than moving either."
+            )
+        return (
+            f"accept/reject decisions from an older default path are not being read: "
+            f"mv {suggestions} {target}/ — the index beside it is derived, so "
+            f"rm -rf {legacy} afterwards, {rebuild}"
+        )
+    if index.is_file():
+        return (
+            f"a stale index from an older default path is being ignored and can be "
+            f"deleted: rm -rf {legacy} ({rebuild})"
+        )
+    return f"an empty directory from an older default path can be deleted: rm -rf {legacy}"
+
+
 def _ensure_directories(cfg: AppConfig) -> None:
     cfg.database.path.parent.mkdir(parents=True, exist_ok=True)
     if cfg.config_path is not None:

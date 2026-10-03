@@ -15,6 +15,9 @@ adheres to [Semantic Versioning](https://semver.org/).
   or a new environment variable fails the suite until it is documented. The
   README's own table was already missing both enrichment variables when that
   guard was added.
+  The documented install command creates `~/.config/pkm-sidecar` first;
+  `install -m 600` alone fails on a machine that has never had the directory,
+  which is precisely the machine following the instructions.
 - **Suggestion review API and dashboard column (step 7 of
   [docs/enrichment.md](docs/enrichment.md))** — `GET /api/suggestions`,
   `POST /api/suggestions/{id}/accept|reject|dismiss`, pending counts on
@@ -109,6 +112,26 @@ adheres to [Semantic Versioning](https://semver.org/).
   so the default configuration — the one every new user gets — was untested.
   `validate_default=True` now applies the declared validators, which also revives
   the two skipped base-URL normalisers.
+  - **Upgrade note.** If you ran a previous version without setting a database
+    path, your files are under a directory literally named `~` beside wherever you
+    ran the command — and `git status` never showed it, because `*.sqlite3` is
+    gitignored and git does not report a directory holding only ignored files.
+    `pkm-sidecar doctor` now has a `legacy_db_path` check that finds such a store
+    and says what to do with it. It is a WARN, not a FAIL: a leftover directory is
+    not a broken install.
+    - The detection is deliberately **not** a migration. The legacy location
+      depends on a working directory the program no longer knows, so there may be
+      one per directory you ever ran from, and `suggestions.sqlite3` holds
+      accept/reject decisions — silently merging an arbitrary one into the live
+      store would be a guess about whose decisions win. Where both stores hold
+      decisions the check reports that fact and offers no command, because `mv`
+      there would clobber the live one.
+    - Only the suggestion store needs rescuing. The index is derived; delete it
+      and run `index rebuild`.
+  - Tests now redirect `HOME` suite-wide. `load_config` creates the parent of the
+    configured database path, so any test that loaded a config without overriding
+    `PKM_SIDECAR_DB_PATH` was creating `~/.local/share/pkm-sidecar` in the
+    developer's own home — two of the new example-config tests did exactly that.
 
 ### Changed
 - `LocalOnlyTransport` → `SingleOriginTransport`, and

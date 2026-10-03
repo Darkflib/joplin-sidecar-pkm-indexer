@@ -61,7 +61,7 @@ documents every section and option with its default, all commented out — copy 
 and uncomment what you need:
 
 ```bash
-install -m 600 config.example.toml ~/.config/pkm-sidecar/config.toml
+mkdir -p ~/.config/pkm-sidecar && install -m 600 config.example.toml ~/.config/pkm-sidecar/config.toml
 ```
 
 Keep it `chmod 600` if it holds a token; `pkm-sidecar doctor` fails the
